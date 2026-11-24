@@ -58,6 +58,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { stateDir } from "./core.mjs";
 import { isJudgeError, lookedIn, readSharedConfig, resolveJudgeCommand, runJudge } from "./judge.mjs";
+import { DEFAULT_IGNORE_TOOLS } from "./transcript.mjs";
 
 export const HOOK_FILE = "hooks/output-types-stop.mjs";
 export const JUDGE_ENV_VAR = "OUTPUT_TYPES_JUDGE_BIN";
@@ -315,12 +316,12 @@ export function skippedLogPath(env = process.env) {
   return join(stateDir(env), "skipped.log");
 }
 
-/** Append `<iso> hooks/output-types-stop.mjs <text>` to skipped.log; never throws. Returns the path, or null. */
-export function logSkipped(text, env = process.env, now = new Date()) {
+/** Append `<iso> <hook> <text>` to skipped.log (hook defaults to HOOK_FILE); never throws. Returns the path, or null. */
+export function logSkipped(text, env = process.env, now = new Date(), hook = HOOK_FILE) {
   try {
     mkdirSync(stateDir(env), { recursive: true });
     const path = skippedLogPath(env);
-    appendFileSync(path, `${now.toISOString()} ${HOOK_FILE} ${String(text).replace(/\s+/g, " ").trim()}\n`);
+    appendFileSync(path, `${now.toISOString()} ${hook || HOOK_FILE} ${String(text).replace(/\s+/g, " ").trim()}\n`);
     return path;
   } catch {
     return null;
@@ -351,12 +352,28 @@ export function noJudgeReason(env = process.env) {
   return `judge not run: judge is on but no command is configured; looked in: ${lookedIn({ pluginKey: pluginKey(env), env }).join(", ")}`;
 }
 
+/**
+ * The sentence that introduces a session record in the judge prompt. jev-judge's shape.ts holds the
+ * same string as OT_RECORD_INTRO, and its test fails when the two differ.
+ */
+export const RECORD_INTRO =
+  "Session record for this receipt (the tool calls the statement names, as the session transcript " +
+  "holds them, output bounded; it is what the command printed or the page returned, not the agent's account of it):";
+
+/**
+ * The judge prompt for one statement. `s.record`, when it is a non-empty string, is added as a
+ * block between the statement and the question: `<<<RECORD\n<record>\nRECORD <length>>>>`, the
+ * length (record.length) in the closer so a parser reads the block from the end without trusting
+ * any marker inside it. With no record the prompt is byte-identical to 0.3.2.
+ */
 export function judgePrompt(s) {
+  const record = typeof s.record === "string" && s.record ? s.record : "";
   return (
     "You are checking one labelled statement from an agent's report against this contract: a label " +
     "(CLAIM for a fact checked in the session, CITE for a fact from an outside source) is earned only " +
     "by the receipt attached to the statement, and a receipt licenses only what it literally shows.\n\n" +
     `Label: ${s.label}\nStatement, with its receipt, verbatim:\n<<<\n${s.text}\n>>>\n\n` +
+    (record ? `${RECORD_INTRO}\n<<<RECORD\n${record}\nRECORD ${record.length}>>>\n\n` : "") +
     "Does the receipt license what the sentence says? Every factual part of the statement must be " +
     "something the receipt itself would show: a file:line that would contain it, a command whose shown " +
     "output states it, a URL or a test that says it. A part that reaches past the receipt (an inference, " +
@@ -370,12 +387,13 @@ export function judgePrompt(s) {
  * `startedAt`. Returns the findings ([{ statement, why }]) for fail and unverified answers; a
  * dispatch error is one skipped.log line and no finding. Never throws.
  */
-export async function judgeStage(statements, judge, { env = process.env, startedAt = Date.now(), budgetMs, marginMs = 2_000, run = runJudge } = {}) {
+export async function judgeStage(statements, judge, { env = process.env, startedAt = Date.now(), budgetMs, marginMs = 2_000, run = runJudge, hook = HOOK_FILE } = {}) {
+  const skip = (text) => logSkipped(text, env, new Date(), hook);
   const findings = [];
   for (const s of statements) {
     const remaining = budgetMs - (Date.now() - startedAt) - marginMs;
     if (remaining <= 0) {
-      logSkipped(`${nameOf(s)} judge skipped: no time left in the hook's budget (source=${judge.source})`, env);
+      skip(`${nameOf(s)} judge skipped: no time left in the hook's budget (source=${judge.source})`);
       continue;
     }
     const timeoutMs = Math.min(judge.timeoutMs, remaining);
@@ -387,7 +405,7 @@ export async function judgeStage(statements, judge, { env = process.env, started
     }
     if (isJudgeError(answer)) {
       const tail = String(answer.stderr ?? "").replace(/\s+/g, " ").trim().slice(-300);
-      logSkipped(`${nameOf(s)} judge ${answer.error}: ${answer.detail}${tail ? ` stderr=${JSON.stringify(tail)}` : ""} (source=${judge.source})`, env);
+      skip(`${nameOf(s)} judge ${answer.error}: ${answer.detail}${tail ? ` stderr=${JSON.stringify(tail)}` : ""} (source=${judge.source})`);
       continue;
     }
     const verdict = answer && typeof answer.verdict === "string" ? answer.verdict.toLowerCase() : "";
@@ -397,4 +415,229 @@ export async function judgeStage(statements, judge, { env = process.env, started
     else findings.push({ statement: s, why: `the judge's answer was neither pass nor fail (unverified)${reason ? `: ${reason}` : ""}` });
   }
   return findings;
+}
+
+// ─── the zero-label rule ────────────────────────────────────────────────────────────────
+//
+// A long report from a turn that did real tool work, with no labelled statement at all, is flagged
+// in one line to the person. Thresholds and the ignore list live flat in the same config file as
+// the judge keys: zeroLabelMinChars (Stop only), zeroLabelMinToolCalls, zeroLabelIgnoreTools.
+
+export const ZERO_LABEL_ENV = "OUTPUT_TYPES_ZERO_LABEL";
+export const ZERO_LABEL_DEFAULTS = Object.freeze({ minChars: 600, minToolCalls: 3 });
+
+const positiveInt = (v, fallback) => (Number.isInteger(v) && v > 0 ? v : fallback);
+
+/**
+ * { off, minChars, minToolCalls, ignore }: off when ZERO_LABEL_ENV is "off" in any case; a threshold
+ * that is not a positive integer falls back to its default; ignore is zeroLabelIgnoreTools when it is
+ * an array of strings, else DEFAULT_IGNORE_TOOLS.
+ */
+export function zeroLabelConfig(env = process.env) {
+  const config = readConfig(env);
+  const ignore = Array.isArray(config.zeroLabelIgnoreTools) && config.zeroLabelIgnoreTools.every((t) => typeof t === "string") ? [...config.zeroLabelIgnoreTools] : [...DEFAULT_IGNORE_TOOLS];
+  return {
+    off: String(env[ZERO_LABEL_ENV] || "").toLowerCase() === "off",
+    minChars: positiveInt(config.zeroLabelMinChars, ZERO_LABEL_DEFAULTS.minChars),
+    minToolCalls: positiveInt(config.zeroLabelMinToolCalls, ZERO_LABEL_DEFAULTS.minToolCalls),
+    ignore,
+  };
+}
+
+/**
+ * The one-line warning. `who` is null on Stop, or { agentType } on SubagentStop. `boundaryFound`
+ * false means the count is a lower bound ("at least").
+ */
+export function renderZeroLabel({ count, boundaryFound = true, who = null }) {
+  const n = `${boundaryFound ? "" : "at least "}${count} tool call${count === 1 ? "" : "s"}`;
+  if (who) return `output-types: the ${who.agentType} subagent ran ${n}, 0 labelled statements in its report. Treat its findings as unverified until checked.`;
+  return `output-types: ${n} this turn, 0 labelled statements. Label what you checked, or say nothing was checked.`;
+}
+
+// ─── the session record for the judge ──────────────────────────────────────────────────
+//
+// A command or URL receipt is only checkable against what the tool returned. The hook finds the
+// Bash or WebFetch call a statement names in the transcript and hands the judge that call's result
+// as a session record, rendered in the receipts audit's own case-receipt format (its evidence.ts
+// HEADER), so the judge reads it the way it was tuned to. Only completed calls are rendered.
+
+/** The header the audit's parser splits on; a body line that would read as one gets a leading space. */
+const RECORD_HEADER_LIKE = /^\[(?:\/|shell command — |fetched \S+ — )/;
+const SHELL_HEAD_LINES = 40;
+const SHELL_TAIL_LINES = 20;
+const SHELL_LINE_CHARS = 1200;
+const SHELL_MAX_CHARS = 4000;
+const SHELL_MAX_COMMAND = 2000;
+const FETCH_MAX_CHARS = 6000;
+export const RECORD_MAX_CHARS = 24_000;
+/** How many tool calls one statement's record holds. */
+export const RECORD_MAX_CALLS = 4;
+
+/**
+ * The commands a statement names, as candidates to match against Bash calls: inline code spans that
+ * open with "$ " or have whitespace inside, bare "$ cmd" lines, and "$ " lines inside fences (else a
+ * fence's first non-empty line). "$ " is stripped, anything from the first " → " or " -> " on is cut,
+ * whitespace is trimmed. Candidates with no whitespace are dropped. Deduplicated, in order.
+ */
+export function commandsNamed(text) {
+  const src = String(text ?? "").replace(/\r\n?/g, "\n");
+  const raw = [];
+  const outside = src.replace(FENCE_RE, (block) => {
+    const lines = block.replace(/^\n/, "").split("\n").slice(1);
+    if (lines.length && /^[ \t]*(?:`{3,}|~{3,})[ \t]*$/.test(lines.at(-1))) lines.pop();
+    const dollar = lines.filter((l) => /^[ \t]*\$ \S/.test(l));
+    if (dollar.length) raw.push(...dollar);
+    else {
+      const first = lines.find((l) => l.trim());
+      if (first) raw.push(first);
+    }
+    return "\n";
+  });
+  for (const line of outside.split("\n")) {
+    if (DOLLAR_LEAD.test(line)) raw.push(line.replace(/^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+|>[ \t]*)*/, ""));
+    for (const m of line.matchAll(CODE_SPAN)) if (/^\$ \S/.test(m[1]) || /\S[ \t]+\S/.test(m[1])) raw.push(m[1]);
+  }
+  const out = [];
+  for (const r of raw) {
+    const c = r
+      .trim()
+      .replace(/^\$ /, "")
+      .split(/ (?:→|->) /)[0]
+      .trim();
+    if (/\s/.test(c) && !out.includes(c)) out.push(c);
+  }
+  return out;
+}
+
+/** The http(s) URLs in a statement, trailing punctuation, quotes, brackets and backticks stripped. Deduplicated. */
+export function urlsNamed(text) {
+  const out = [];
+  for (const m of String(text ?? "").matchAll(/\bhttps?:\/\/[^\s<>"'`]+/g)) {
+    const u = m[0].replace(/[.,;:!?)\]}>'"`*_]+$/, "");
+    if (u.length > "https://".length && !out.includes(u)) out.push(u);
+  }
+  return out;
+}
+
+/** The receipts audit's commandIn (mechanical.ts): every fragment of `cmd`, split at "…" or "...", is in `haystack`, whitespace folded. */
+export function commandIn(cmd, haystack) {
+  const c = String(haystack ?? "").replace(/\s+/g, " ");
+  const frags = String(cmd ?? "")
+    .split(/\s*(?:…|\.\.\.)\s*/)
+    .map((f) => f.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  return frags.length > 0 && frags.every((f) => c.includes(f));
+}
+
+/**
+ * A URL's identity for matching: scheme and host lowercased, a #fragment dropped, and nothing else
+ * touched (path and query case, http versus https, a www. prefix and a trailing slash all count).
+ */
+export function urlKey(url) {
+  const u = String(url ?? "").trim().replace(/#.*$/, "");
+  const m = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)(.*)$/i.exec(u);
+  return m ? m[1].toLowerCase() + m[2].toLowerCase() + m[3] : u;
+}
+
+/**
+ * The tool calls a statement's receipt names: for each command, the newest Bash call whose
+ * input.command contains it (commandIn); for each URL, the newest WebFetch call whose requested or
+ * final URL has the same urlKey. Deduplicated by id, at most `max`.
+ *   wanted: how many candidates the statement had (0: nothing to look up).
+ *   matched: the completed calls, in transcript order.
+ *   pending: the tool name of each candidate whose newest matching call has no captured result; an
+ *            older completed run is never put in its place.
+ */
+export function receiptCalls(statement, calls, { max = RECORD_MAX_CALLS } = {}) {
+  const text = statement?.text ?? "";
+  const cmds = commandsNamed(text);
+  const urls = urlsNamed(text);
+  const list = Array.isArray(calls) ? calls : [];
+  const found = [];
+  const pending = [];
+  const take = (call) => {
+    if (!call) return;
+    if (!call.result) pending.push(call.name);
+    else if (!found.includes(call)) found.push(call);
+  };
+  for (const cmd of cmds) take(list.findLast((c) => c.name === "Bash" && commandIn(cmd, c.input?.command)));
+  for (const url of urls) {
+    const key = urlKey(url);
+    take(list.findLast((c) => c.name === "WebFetch" && (urlKey(c.input?.url) === key || (c.result?.finalUrl && urlKey(c.result.finalUrl) === key))));
+  }
+  const matched = found.sort((a, b) => a.at - b.at).slice(0, max);
+  return { wanted: cmds.length + urls.length, matched, pending };
+}
+
+/** success, error or interrupted, or null when the call has no result (never rendered). */
+export function callStatus(call) {
+  const r = call?.result;
+  if (!r) return null;
+  if (r.interrupted) return "interrupted";
+  return r.isError ? "error" : "success";
+}
+
+const normalizeNewlines = (s) => String(s ?? "").replace(/\r\n?/g, "\n");
+const escapeHeaders = (body) =>
+  body
+    .split("\n")
+    .map((l) => (RECORD_HEADER_LIKE.test(l) ? ` ${l}` : l))
+    .join("\n");
+
+/** Head and tail of a shell run's output, each line capped, the middle marked as omitted (the audit's boundedOutput). */
+function boundedOutput(out) {
+  const lines = out.split("\n").map((l) => l.slice(0, SHELL_LINE_CHARS));
+  const omitted = lines.length - SHELL_HEAD_LINES - SHELL_TAIL_LINES;
+  const kept = omitted > 0 ? [...lines.slice(0, SHELL_HEAD_LINES), `… ${omitted} lines omitted …`, ...lines.slice(-SHELL_TAIL_LINES)] : lines;
+  const joined = kept.join("\n");
+  if (joined.length <= SHELL_MAX_CHARS) return joined;
+  const head = Math.floor(SHELL_MAX_CHARS * 0.6);
+  const tail = SHELL_MAX_CHARS - head;
+  return `${joined.slice(0, head)}\n… ${joined.length - head - tail} chars omitted …\n${joined.slice(-tail)}`;
+}
+
+function shellBlock(call, status) {
+  const folded = String(call.input?.command ?? "").replace(/\s+/g, " ").trim();
+  const command = folded.length > SHELL_MAX_COMMAND ? `${folded.slice(0, SHELL_MAX_COMMAND)}…` : folded;
+  const code = typeof call.result.exitCode === "number" ? String(call.result.exitCode) : "unknown";
+  const out = boundedOutput(normalizeNewlines(call.result.text).trim());
+  return `[shell command — ${status}]\n${escapeHeaders(`$ ${command}\nstatus: ${status}\nexit code: ${code}${out ? `\n${out}` : ""}`)}`;
+}
+
+function fetchBlock(call, status) {
+  const requested = String(call.input?.url ?? "").replace(/\s+/g, "");
+  const final = call.result.finalUrl ? String(call.result.finalUrl).replace(/\s+/g, "") : requested;
+  const text = normalizeNewlines(call.result.text).trim().slice(0, FETCH_MAX_CHARS);
+  return `[fetched ${requested || final} — the tool's result as the agent saw it, bounded by output-types]\n${escapeHeaders(`requested: ${requested}\nfinal: ${final}\nstatus: ${status}${text ? `\n${text}` : ""}`)}`;
+}
+
+/**
+ * The session record for one statement: each matched call as one case-receipt block, joined by a
+ * blank line; whole trailing blocks are dropped past RECORD_MAX_CHARS, and a last line says how many.
+ * A call without a result, or of another tool, is not rendered. "" when nothing is rendered.
+ */
+export function renderRecord(matched) {
+  const blocks = [];
+  for (const call of matched ?? []) {
+    const status = callStatus(call);
+    if (!status) continue;
+    if (call.name === "Bash") blocks.push(shellBlock(call, status));
+    else if (call.name === "WebFetch") blocks.push(fetchBlock(call, status));
+  }
+  const kept = [];
+  let used = 0;
+  for (const b of blocks) {
+    const add = (kept.length ? 2 : 0) + b.length;
+    if (used + add > RECORD_MAX_CHARS - 80) break;
+    kept.push(b);
+    used += add;
+  }
+  const dropped = blocks.length - kept.length;
+  if (dropped) kept.push(`[omitted: ${dropped} more tool call${dropped === 1 ? "" : "s"} past the record's ${RECORD_MAX_CHARS} characters]`);
+  return kept.join("\n\n");
+}
+
+/** True when a statement carries an absolute file:line, which the judge can read from disk without a record. */
+export function hasFileLine(statement) {
+  return ABS_FILE_LINE.test(statement?.text ?? "");
 }
