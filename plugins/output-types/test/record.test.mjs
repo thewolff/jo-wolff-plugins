@@ -77,6 +77,31 @@ test("commandsNamed: inline code with a space or $, bare $ lines, $ lines in fen
   assert.deepEqual(commandsNamed("no code here"), []);
 });
 
+test("commandsNamed: a one-word command is kept when '$ ' introduces it or it sits in a shell-tagged fence; bare inline code and an untagged fence's first line are still dropped", () => {
+  assert.deepEqual(commandsNamed("`$ pwd` → /srv/work"), ["pwd"]);
+  assert.deepEqual(commandsNamed("Ran:\n$ make\n- $ ls"), ["make", "ls"]);
+  assert.deepEqual(commandsNamed("```\n$ ls\na b\n```"), ["ls"]);
+  for (const tag of ["sh", "bash", "zsh", "shell", "console", "shellsession"]) assert.deepEqual(commandsNamed("```" + tag + "\npwd\n/srv/work\n```"), ["pwd"], tag);
+  assert.deepEqual(commandsNamed("`pwd` is /srv/work"), []);
+  assert.deepEqual(commandsNamed("```js\nfoo\n```"), []);
+  assert.deepEqual(commandsNamed("```\npwd\n```"), []);
+});
+
+test("receiptCalls: every unmatched candidate is reported in missing, also when another candidate matched", () => {
+  const calls = [bash("a", "npm test", 1)];
+  const r = receiptCalls({ text: "`npm test` → ok and `npm run build` → ok per https://x.y/z" }, calls);
+  assert.equal(r.wanted, 3);
+  assert.deepEqual(r.matched.map((c) => c.id), ["a"]);
+  assert.deepEqual(r.missing, ["npm run build", "https://x.y/z"]);
+  assert.deepEqual(receiptCalls({ text: "`npm test` → ok" }, calls).missing, []);
+});
+
+test("receiptCalls: a one-word command matches a whole word of the Bash command, never a substring of another word", () => {
+  const calls = [bash("f", "echo false", 1), bash("p", "cd /srv/work && pwd", 2)];
+  assert.deepEqual(receiptCalls({ text: "`$ ls` → empty" }, calls).missing, ["ls"]);
+  assert.deepEqual(receiptCalls({ text: "`$ pwd` → /srv/work" }, calls).matched.map((c) => c.id), ["p"]);
+});
+
 test("urlsNamed: trailing punctuation, quotes, brackets and backticks stripped", () => {
   assert.deepEqual(urlsNamed("per https://example.com/docs. and (https://a.b/c?x=1), `https://c.d/e`, \"https://e.f/g\"!"), ["https://example.com/docs", "https://a.b/c?x=1", "https://c.d/e", "https://e.f/g"]);
   assert.deepEqual(urlsNamed("see [the page](https://x.y/z)."), ["https://x.y/z"]);
@@ -112,7 +137,7 @@ test("receiptCalls: newest matching Bash and WebFetch call per candidate, dedupl
   assert.equal(r.wanted, 3);
   assert.deepEqual(r.matched.map((c) => c.id), ["b", "c", "d"]);
   assert.deepEqual(r.pending, []);
-  assert.deepEqual(receiptCalls({ text: "at /a/b.ts:3" }, calls), { wanted: 0, matched: [], pending: [] });
+  assert.deepEqual(receiptCalls({ text: "at /a/b.ts:3" }, calls), { wanted: 0, matched: [], pending: [], missing: [] });
   const none = receiptCalls({ text: "`make all` → ok" }, calls);
   assert.equal(none.wanted, 1);
   assert.deepEqual(none.matched, []);

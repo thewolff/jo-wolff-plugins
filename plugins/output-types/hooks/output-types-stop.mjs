@@ -137,7 +137,8 @@ export function zeroLabel(text, session, { env = process.env, who = null } = {})
  * (the whole window: a receipt may come from earlier in the session). Not judged, one skipped.log
  * line each and nothing for the person: the newest matching call has no captured result; or the
  * statement names a command or a URL, nothing matched (or no transcript was readable), and it has
- * no absolute file:line either.
+ * no absolute file:line either; or some of its commands or URLs matched, others did not, and it has
+ * no absolute file:line (the log line names each one that matched nothing).
  */
 export function withRecords(receipted, session, { env = process.env, hook = HOOK_FILE } = {}) {
   const out = [];
@@ -157,13 +158,18 @@ export function withRecords(receipted, session, { env = process.env, hook = HOOK
       unmatched("no transcript was readable to match its command or URL against");
       continue;
     }
-    const { matched, pending } = receiptCalls(s, calls);
+    const { matched, pending, missing } = receiptCalls(s, calls);
     if (pending.length) {
       skip(s, `evidence unavailable: newest matching ${pending[0]} call has no captured result`);
       continue;
     }
     const record = renderRecord(matched);
-    if (record) out.push({ ...s, record });
+    // Some candidates matched and some did not: the same rule as nothing matching (judged only on
+    // a file:line), so a partial record never stands in for the whole receipt.
+    if (record && missing.length) {
+      if (hasFileLine(s)) out.push({ ...s, record });
+      else skip(s, `the session record is incomplete: no Bash or WebFetch call in the last 16 MiB of the transcript matches ${missing.map((m) => `\`${m}\``).join(", ")} (it may have run in a subagent or an earlier session)`);
+    } else if (record) out.push({ ...s, record });
     else unmatched("no Bash or WebFetch call in the last 16 MiB of the transcript matches its command or URL (it may have run in a subagent or an earlier session)");
   }
   return out;
