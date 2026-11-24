@@ -1,0 +1,58 @@
+{
+  "$comment": "SubagentStop: the report a subagent delivered through SubagentHandback (last_assistant_message holds only its closing text) carries a **CLAIM** with no receipt → one systemMessage to the person; nothing fed back to the subagent, never a block.",
+  "event": "SubagentStop",
+  "expect": "systemMessage",
+  "reason": "without a receipt that holds",
+  "transcript": [
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": "check whether the handler returns early"
+      },
+      "isSidechain": true
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "h1",
+            "name": "SubagentHandback",
+            "input": {
+              "message": "**CLAIM**\nThe handler returns early."
+            }
+          }
+        ]
+      },
+      "isSidechain": true
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "h1",
+            "content": "delivered"
+          }
+        ]
+      },
+      "isSidechain": true
+    }
+  ],
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${CWD}/no-such-main-transcript.jsonl",
+    "cwd": "${CWD}",
+    "hook_event_name": "SubagentStop",
+    "stop_hook_active": false,
+    "agent_id": "a1",
+    "agent_type": "builder",
+    "agent_transcript_path": "${TRANSCRIPT}",
+    "last_assistant_message": "Done."
+  }
+}

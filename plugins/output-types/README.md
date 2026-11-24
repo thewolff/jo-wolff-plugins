@@ -52,6 +52,12 @@ turn.
 - A **Stop check** that reads the finished message and warns, in one line to you, about every
   `**CLAIM**` or `**CITE**` that carries no receipt shape; optionally, a judge model asks whether
   each receipt licenses its sentence. Warns, never blocks; off switch and the judge's switch below.
+- A **zero-label warning** on Stop: a long reply after several tool calls that labels nothing at
+  all gets one line saying so.
+- A **session record** for the judge: a receipt that names a command or a URL is judged against
+  that call's captured result from the transcript, not against the sentence alone.
+- A **subagent check** on SubagentStop: the same checks run on the report a subagent delivered,
+  and a subagent that worked with tools and labelled nothing is named.
 
 ## The Stop check
 
@@ -112,6 +118,50 @@ entry in `hooks.json` has `timeout: 60`), counted from when the hook process sta
 it read its input, so a hanging judge is killed by its own timer, never by the host. Should the
 hook's own deadline fire first anyway, the judge's process group is killed as the hook exits.
 
+**The session record.** With the judge on, a statement whose receipt names a command (`$ cmd`, or
+a command in inline code) or a URL is matched against the transcript's last 16 MiB: the newest
+completed `Bash` call whose command contains it, or the newest `WebFetch` whose requested or final
+URL is it (scheme and host compared without case, fragment dropped). The judge gets that call's
+result in a `<<<RECORD … RECORD <length>>>>` block, bounded (shell output 40 head and 20 tail lines,
+fetched text 6000 characters, at most 4 calls and 24,000 characters) and labelled with its exit
+code or `unknown`. A statement naming a command that matched no call and carrying no `file:line`
+is not judged; one skipped.log line says so. When the newest matching call has no captured result
+yet, the statement is not judged either, and an older run is never used in its place. A statement
+with no command or URL is judged exactly as in 0.3.2.
+
+**The zero-label warning.** Labels only help when they are used. A reply of 600 or more characters
+that holds no labelled statement at all, after 3 or more tool calls in the current turn, gets:
+
+```
+output-types: 5 tool calls this turn, 0 labelled statements. Label what you checked, or say nothing was checked.
+```
+
+The turn starts at your last message (a hook's injected text or a tool result does not start a
+turn). Dispatching and bookkeeping tools are not counted: `Agent`, `Task`, `SendMessage`,
+`TaskStop`, `ToolSearch`, `Skill`, `TodoWrite`, `SubagentHandback`. Tune it in the config file
+with `zeroLabelMinChars`, `zeroLabelMinToolCalls` and `zeroLabelIgnoreTools` (a list that replaces
+the default one); `OUTPUT_TYPES_ZERO_LABEL=off` turns this rule off and leaves the rest on. No
+transcript, as on OMP, means no warning.
+
+## The subagent check
+
+`hooks/output-types-subagent-stop.mjs` runs on `SubagentStop` with the same handler. It checks the
+report the subagent delivered: the `message` of its `SubagentHandback` call from
+`agent_transcript_path` when there is one (that tool's report never reaches
+`last_assistant_message`, which then holds only the closing words), else `last_assistant_message`,
+else the agent transcript's last assistant text. The receipts check and the judge, with session
+records from the agent's own transcript, run as on Stop. The zero-label rule runs with no
+character floor and the same 3-call floor, and names the agent:
+
+```
+output-types: the builder subagent ran 4 tool calls, 0 labelled statements in its report. Treat its findings as unverified until checked.
+```
+
+Claude Code's internal agents (an empty `agent_type`) skip that rule. The warning goes to you
+only: nothing is fed back to the subagent and it is never kept running. skipped.log lines from
+this path name `hooks/output-types-subagent-stop.mjs`. Whether OMP runs this hook has not been
+checked.
+
 ## What this does, and what it does not do: it delivers, and it warns
 
 Three pieces, and it is worth knowing which does what before you install.
@@ -131,7 +181,8 @@ stays in context for the rest of the session.
 with no receipt shape, and with the judge on, a receipt that does not say what the sentence says.
 It does not catch the other one: a fact left bare, with no label at all, is exactly what the
 contract says an unreceipted statement should look like, and nothing here can tell a deliberate
-omission from a forgotten receipt. So do not read an installed copy as a guarantee: a report that
+omission from a forgotten receipt. The zero-label warning narrows this only for a long reply, or
+a subagent report, that follows tool calls and labels nothing. So do not read an installed copy as a guarantee: a report that
 comes back with every fact unlabeled comes back exactly that way. What you get is a contract the
 model has read, held to the half of it that is checkable.
 
@@ -152,6 +203,14 @@ use goes to `skipped.log` beside it.
 The tests run with `node --test` from inside `plugins/output-types/`. `lib/judge.mjs` and
 `lib/hook-runner.mjs` are plugin-kit's, copied byte for byte; change them there and copy again
 (the kit's `test/judge.test.mjs` and this plugin's `test/manifest.test.mjs` both fail on drift).
+
+## Changes in 0.3.3
+
+The zero-label warning, the session record and the subagent check above are new; all three read
+the transcript through `lib/transcript.mjs`, which reads at most the last 16 MiB. Prompts that
+carry a session record need the matching judge-side `shape.ts`; update that first (see
+`CHANGELOG.md`). The old subagent guard's repost-the-report feedback, loop brakes, allowlist and
+exemptions are not carried over.
 
 ## Changes in 0.3.2
 

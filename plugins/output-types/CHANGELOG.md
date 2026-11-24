@@ -3,6 +3,36 @@
 All notable changes to output-types are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.3.3 - 2026-11-23
+
+Release order: update the judge side first (`jev-judge/shape.ts`, `jev.ts`, `jev-judge-all.ts` and its test, outside this repository) and run its test against this build (`OT_RECORD_INTRO equals receipts.mjs RECORD_INTRO` must pass), then install this plugin. A 0.3.3 hook talking to the old `shape.ts` turns every prompt that carries a session record into an unknown shape (exit 2, one skipped.log line). The new `shape.ts` with the 0.3.2 hook is fine: a prompt without a record is unchanged.
+
+### Added
+
+- Zero-label warning on Stop: a reply of 600 or more characters (trimmed) with no labelled statement at all, after 3 or more tool calls in the current turn, gets one `systemMessage`: `output-types: N tool calls this turn, 0 labelled statements. Label what you checked, or say nothing was checked.` ("at least N" when the turn's start is not in the transcript window). The turn starts at the last user entry that is not `isMeta` and is not only tool results. Dispatch and bookkeeping tools (`Agent`, `Task`, `SendMessage`, `TaskStop`, `ToolSearch`, `Skill`, `TodoWrite`, `SubagentHandback`) are not counted. `OUTPUT_TYPES_ZERO_LABEL=off` turns this rule off alone; config keys `zeroLabelMinChars`, `zeroLabelMinToolCalls` and `zeroLabelIgnoreTools` in `${XDG_CONFIG_HOME:-~/.config}/output-types/config.json` tune it. No transcript (OMP, or a missing file) means no warning.
+- Session record for the judge: a receipted statement that names a command or a URL gets the newest matching completed Bash or WebFetch call from the transcript window, rendered in the receipts audit's case-receipt format (`[shell command \u2014 <status>]` with `status:` and `exit code:` lines, `unknown` when no code was captured; `[fetched <url> \u2014 …]` with `requested:` and `final:` lines), bounded (shell output 40 head and 20 tail lines, 1200 characters a line, 4000 a block; fetched text 6000; at most 4 calls and 24,000 characters). It goes into the judge prompt as a `<<<RECORD … RECORD <length>>>>` block, the length in the closer. Without a record the prompt is byte-identical to 0.3.2. URLs match on scheme and host case and a dropped fragment only; a redirect's final URL matches too.
+- `hooks/output-types-subagent-stop.mjs`, registered for `SubagentStop` (timeout 60, no matcher): the receipts check, the judge with session records, and the zero-label rule on the report a subagent delivered. It reads the `SubagentHandback` message from `agent_transcript_path` (with that tool, `last_assistant_message` holds only the closing text), else `last_assistant_message`, else the agent transcript's last assistant text. The zero-label rule has no character floor here, keeps the tool-call floor, and skips Claude Code's internal agents (empty `agent_type`). Its warning: `output-types: the <agent_type> subagent ran N tool calls, 0 labelled statements in its report. Treat its findings as unverified until checked.`
+- `lib/transcript.mjs`: the one bounded transcript reader all of the above share, tested against transcripts captured from a real Claude Code run (`test/fixtures/capture-transcripts.sh`, run by hand).
+
+### Changed
+
+- Every transcript read is bounded to the last 16 MiB. `extractText` keeps its name and export but no longer loads the whole file, so a transcript past Node's string limit (about 512 MiB) no longer reads as empty.
+- `logSkipped(text, env, now, hook)` takes the hook file to stamp, and `judgeStage` passes `opts.hook` through, so skipped.log lines from the subagent path name `hooks/output-types-subagent-stop.mjs`.
+- With the judge on, a statement that names a command, matches no completed Bash call in the window, and has no absolute `file:line` is not sent to the judge: one skipped.log line says no tool call matched. A statement whose newest matching call has no captured result is not judged either (`evidence unavailable: newest matching <tool> call has no captured result`), and an older run is never put in its place. A statement that names only URLs and matches nothing is judged on its text, as in 0.3.2.
+
+### Removed
+
+These behaviours of the newdle plugin's old `output-types-guard.mjs` subagent guard are not carried over by the new `SubagentStop` hook:
+
+- Feedback to the subagent through `hookSpecificOutput.additionalContext` asking it to repost its report: the new hook warns the person only, and never keeps a subagent running.
+- Its loop brakes (content dedupe, at most 2 nudges per run, state in a temp directory): only needed when the hook makes the subagent continue.
+- Its agent allowlist and exempt list: every agent type is checked; the zero-label rule skips only an empty `agent_type`, and its tool-call floor stands in for the exempt list.
+- Its exemptions for action-only reports, proposal-only plans and completion phrases: with the tool-call floor these rarely apply; a subagent report of 3 or more tool calls with no labels now warns.
+- Its scope gate (`newdle-hooks.json`) and level gate: the hook runs wherever the plugin is installed.
+- Its `OUTPUT_TYPES_GUARD=off` switch: use `OUTPUT_TYPES_CHECK=off` (everything) or `OUTPUT_TYPES_ZERO_LABEL=off` (the zero-label rule).
+
+The old guard's entry in `~/.claude/settings.json` is removed separately, after this release is installed and one `SubagentStop` warning from it has been seen.
+
 ## 0.3.2 - 2026-11-04
 
 ### Changed
