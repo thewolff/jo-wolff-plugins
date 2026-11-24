@@ -60,13 +60,13 @@ export const JUDGE_DEADLINE_MS = 55_000;
 /**
  * The finished assistant text: the payload's last_assistant_message, else the transcript's last
  * assistant text entry; "" when neither. The transcript is read through lib/transcript.mjs, so only
- * its last TAIL_BYTES are touched.
+ * its last TAIL_BYTES are touched, with sidechain entries dropped as on Stop.
  */
 export function extractText(payload) {
   if (!payload || typeof payload !== "object") return "";
   const direct = payload.last_assistant_message;
   if (typeof direct === "string" && direct.trim()) return direct;
-  const session = readSession(typeof payload.transcript_path === "string" ? payload.transcript_path : "", { skipSidechain: false });
+  const session = readSession(typeof payload.transcript_path === "string" ? payload.transcript_path : "", { skipSidechain: true });
   return session ? lastAssistantText(session.entries) : "";
 }
 
@@ -136,27 +136,25 @@ export function zeroLabel(text, session, { env = process.env, who = null } = {})
  * a command or URL gets the matching completed Bash or WebFetch calls from the transcript window
  * (the whole window: a receipt may come from earlier in the session). Not judged, one skipped.log
  * line each and nothing for the person: the newest matching call has no captured result; or the
- * statement names a command, nothing matched (or no transcript was readable), and it has no
- * absolute file:line either. A statement that names only URLs and matched nothing is judged on its
- * text, as in 0.3.2 (the 0.3.2 judge tests pin that).
+ * statement names a command or a URL, nothing matched (or no transcript was readable), and it has
+ * no absolute file:line either.
  */
 export function withRecords(receipted, session, { env = process.env, hook = HOOK_FILE } = {}) {
   const out = [];
   let calls;
   const skip = (s, why) => logSkipped(`${nameOf(s)} judge not run: ${why}`, env, new Date(), hook);
   for (const s of receipted) {
-    const namesCommand = commandsNamed(s.text).length > 0;
-    if (!namesCommand && !urlsNamed(s.text).length) {
+    if (!commandsNamed(s.text).length && !urlsNamed(s.text).length) {
       out.push(s);
       continue;
     }
-    const unmatched = (why) => (hasFileLine(s) || !namesCommand ? out.push(s) : skip(s, why));
+    const unmatched = (why) => (hasFileLine(s) ? out.push(s) : skip(s, why));
     if (calls === undefined) {
       const ses = resolve(session);
       calls = ses ? toolCallsOf(ses.entries) : null;
     }
     if (!calls) {
-      unmatched("no transcript was readable to match its command against");
+      unmatched("no transcript was readable to match its command or URL against");
       continue;
     }
     const { matched, pending } = receiptCalls(s, calls);
@@ -189,7 +187,8 @@ export async function handle(input, { env = process.env, startedAt = runnerStart
   if (src.event === "SubagentStop") text = extractReport(input, session());
   else {
     const direct = input?.last_assistant_message;
-    text = typeof direct === "string" && direct.trim() ? direct : readRaw() ? lastAssistantText(readRaw().entries) : "";
+    // The fallback report comes from the Stop-filtered session: a trailing sidechain entry is not the parent's reply.
+    text = typeof direct === "string" && direct.trim() ? direct : session() ? lastAssistantText(session().entries) : "";
   }
   if (!text) return null;
   const statements = extractStatements(text);
