@@ -19,11 +19,13 @@ import {
   turnStartIndex,
   turnToolCalls,
 } from "../lib/transcript.mjs";
+import { callStatus, receiptCalls, renderRecord } from "../lib/receipts.mjs";
 import { PLUGIN_ROOT, sandbox } from "./helpers.mjs";
 
 const FIXTURES = join(PLUGIN_ROOT, "test", "fixtures");
 const MAIN = join(FIXTURES, "cc-main-turns.jsonl");
 const SUB = join(FIXTURES, "cc-subagent-handback.jsonl");
+const WEBFETCH = join(FIXTURES, "cc-webfetch.jsonl");
 
 const user = (content, extra = {}) => ({ type: "user", message: { role: "user", content }, ...extra });
 const assistant = (content, extra = {}) => ({ type: "assistant", message: { role: "assistant", content }, ...extra });
@@ -175,8 +177,8 @@ test("captured main transcript (cc-main-turns.jsonl): the turn's tool calls are 
   const bash = all.calls.filter((c) => c.name === "Bash" && c.result);
   assert.ok(bash.every((c) => c.result.isError === false && typeof c.result.text === "string"));
   assert.match(bash.find((c) => /echo one/.test(c.input.command)).result.text, /^one/);
-  // The capture prompt asks for a WebFetch call, but the captured session had no WebFetch tool;
-  // WebFetch result parsing is covered by the toolCallsOf test above.
+  // The capture prompt asks for a WebFetch call, but this session had no WebFetch tool; WebFetch
+  // parsing is backed by the separate capture in cc-webfetch.jsonl (the test below).
 });
 
 test("captured subagent transcript (cc-subagent-handback.jsonl): every entry is a sidechain entry, kept when asked; the handback message is the report", () => {
@@ -189,4 +191,47 @@ test("captured subagent transcript (cc-subagent-handback.jsonl): every entry is 
   assert.ok(!calls.calls.some((c) => c.name === "SubagentHandback"), "the handback is not counted");
   assert.ok(toolCallsOf(session.entries).some((c) => c.name === "SubagentHandback"));
   assert.match(handbackMessage(session), /from-subagent/);
+});
+
+test("captured WebFetch results (cc-webfetch.jsonl, Claude Code 2.1.318): success, cross-host redirect, HTTP 404 and an unresolvable host parse to the right text, status and URLs, and receipt matching uses them", () => {
+  const calls = toolCallsOf(readSession(WEBFETCH).entries).filter((c) => c.name === "WebFetch");
+  assert.equal(calls.length, 4);
+  assert.ok(calls.every((c) => c.result), "every fetch has a captured result");
+  const by = (frag) => calls.find((c) => c.input.url.includes(frag));
+  const ok = by("example.com");
+  const redirect = by("redirect-to");
+  const missing = by("status/404");
+  const dead = by("nonexistent.invalid");
+
+  assert.deepEqual(
+    { text: ok.result.text, isError: ok.result.isError, httpStatus: ok.result.httpStatus, finalUrl: ok.result.finalUrl, status: callStatus(ok) },
+    { text: 'The page title is "Example Domain."', isError: false, httpStatus: 200, finalUrl: "https://example.com", status: "success" },
+  );
+  // The redirect target sits on a "Redirect URL (from the server's Location header …):" line.
+  assert.match(redirect.result.text, /^REDIRECT DETECTED/);
+  assert.equal(redirect.result.httpStatus, 302);
+  assert.equal(redirect.result.finalUrl, "https://example.org/");
+  // A 404 is not an is_error result; the HTTP status makes it an error in the record.
+  assert.equal(missing.result.isError, false);
+  assert.equal(missing.result.httpStatus, 404);
+  assert.equal(callStatus(missing), "error");
+  assert.match(missing.result.text, /HTTP 404 Not Found/);
+  // An unreachable host is an is_error result whose toolUseResult is a plain string.
+  assert.deepEqual(
+    { isError: dead.result.isError, httpStatus: dead.result.httpStatus, finalUrl: dead.result.finalUrl, status: callStatus(dead) },
+    { isError: true, httpStatus: null, finalUrl: null, status: "error" },
+  );
+  assert.match(dead.result.text, /ENOTFOUND nonexistent\.invalid/);
+
+  // Matching: host case and a fragment are ignored; a redirect's target and its requested URL both match.
+  const matchedUrl = (text) => receiptCalls({ text }, calls).matched.map((c) => c.input.url);
+  assert.deepEqual(matchedUrl("per https://EXAMPLE.com#top the title is Example Domain"), ["https://example.com"]);
+  assert.deepEqual(matchedUrl("per https://example.org/ the title is x"), [redirect.input.url]);
+  assert.deepEqual(matchedUrl(`per ${redirect.input.url} it redirects`), [redirect.input.url]);
+  assert.deepEqual(matchedUrl("per https://example.net/ nothing"), []);
+
+  // The record names requested and final URLs and the status the fixture supports.
+  const record = renderRecord([redirect, missing]);
+  assert.ok(record.includes(`requested: ${redirect.input.url}\nfinal: https://example.org/\nstatus: success\nREDIRECT DETECTED`), record);
+  assert.ok(record.includes("requested: https://httpbin.org/status/404\nfinal: https://httpbin.org/status/404\nstatus: error\nThe server returned HTTP 404"), record);
 });
