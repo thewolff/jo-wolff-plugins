@@ -477,36 +477,55 @@ export const RECORD_MAX_CALLS = 4;
  * The commands a statement names, as candidates to match against Bash calls: inline code spans that
  * open with "$ " or have whitespace inside, bare "$ cmd" lines, and "$ " lines inside fences (else a
  * fence's first non-empty line). "$ " is stripped, anything from the first " → " or " -> " on is cut,
- * whitespace is trimmed. Candidates with no whitespace are dropped. Deduplicated, in order.
+ * whitespace is trimmed. A one-word candidate is kept only when it is explicit: introduced by "$ ",
+ * or the first line of a shell-tagged fence (sh, bash, zsh, shell, console, shellsession); any other
+ * candidate with no whitespace is dropped (a bare `word` in inline code is too ambiguous). Deduplicated, in order.
  */
 export function commandsNamed(text) {
   const src = String(text ?? "").replace(/\r\n?/g, "\n");
-  const raw = [];
+  const raw = []; // [candidate, explicit]
   const outside = src.replace(FENCE_RE, (block) => {
-    const lines = block.replace(/^\n/, "").split("\n").slice(1);
+    const [open, ...lines] = block.replace(/^\n/, "").split("\n");
     if (lines.length && /^[ \t]*(?:`{3,}|~{3,})[ \t]*$/.test(lines.at(-1))) lines.pop();
     const dollar = lines.filter((l) => /^[ \t]*\$ \S/.test(l));
-    if (dollar.length) raw.push(...dollar);
+    if (dollar.length) raw.push(...dollar.map((l) => [l, true]));
     else {
       const first = lines.find((l) => l.trim());
-      if (first) raw.push(first);
+      if (first) raw.push([first, SHELL_FENCE.test(open)]);
     }
     return "\n";
   });
   for (const line of outside.split("\n")) {
-    if (DOLLAR_LEAD.test(line)) raw.push(line.replace(/^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+|>[ \t]*)*/, ""));
-    for (const m of line.matchAll(CODE_SPAN)) if (/^\$ \S/.test(m[1]) || /\S[ \t]+\S/.test(m[1])) raw.push(m[1]);
+    if (DOLLAR_LEAD.test(line)) raw.push([line.replace(/^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+|>[ \t]*)*/, ""), true]);
+    for (const m of line.matchAll(CODE_SPAN)) {
+      if (/^\$ \S/.test(m[1])) raw.push([m[1], true]);
+      else if (/\S[ \t]+\S/.test(m[1])) raw.push([m[1], false]);
+    }
   }
   const out = [];
-  for (const r of raw) {
+  for (const [r, explicit] of raw) {
     const c = r
       .trim()
       .replace(/^\$ /, "")
       .split(/ (?:→|->) /)[0]
       .trim();
-    if (/\s/.test(c) && !out.includes(c)) out.push(c);
+    if (c && (explicit || /\s/.test(c)) && !out.includes(c)) out.push(c);
   }
   return out;
+}
+
+/** A fence opener whose info string names a shell. */
+const SHELL_FENCE = /^[ \t]*(?:`{3,}|~{3,})[ \t]*(?:sh|bash|zsh|shell|console|shellsession)\b/i;
+
+/**
+ * Whether the Bash command `haystack` ran `cmd`: commandIn, and for a one-word `cmd` also as a whole
+ * word (bounded by whitespace, a shell operator or a paren), so `$ ls` never matches `echo false`.
+ */
+function ranCommand(cmd, haystack) {
+  if (!commandIn(cmd, haystack)) return false;
+  if (/\s|…|\.\.\./.test(cmd)) return true;
+  const word = cmd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[\\s;&|()])${word}(?=$|[\\s;&|()])`).test(String(haystack ?? ""));
 }
 
 /** The http(s) URLs in a statement, trailing punctuation, quotes, brackets and backticks stripped. Deduplicated. */
@@ -547,6 +566,7 @@ export function urlKey(url) {
  *   matched: the completed calls, in transcript order.
  *   pending: the tool name of each candidate whose newest matching call has no captured result; an
  *            older completed run is never put in its place.
+ *   missing: each command or URL candidate no call matched at all, in order, also when others matched.
  */
 export function receiptCalls(statement, calls, { max = RECORD_MAX_CALLS } = {}) {
   const text = statement?.text ?? "";
@@ -555,18 +575,19 @@ export function receiptCalls(statement, calls, { max = RECORD_MAX_CALLS } = {}) 
   const list = Array.isArray(calls) ? calls : [];
   const found = [];
   const pending = [];
-  const take = (call) => {
-    if (!call) return;
-    if (!call.result) pending.push(call.name);
+  const missing = [];
+  const take = (call, candidate) => {
+    if (!call) missing.push(candidate);
+    else if (!call.result) pending.push(call.name);
     else if (!found.includes(call)) found.push(call);
   };
-  for (const cmd of cmds) take(list.findLast((c) => c.name === "Bash" && commandIn(cmd, c.input?.command)));
+  for (const cmd of cmds) take(list.findLast((c) => c.name === "Bash" && ranCommand(cmd, c.input?.command)), cmd);
   for (const url of urls) {
     const key = urlKey(url);
-    take(list.findLast((c) => c.name === "WebFetch" && (urlKey(c.input?.url) === key || (c.result?.finalUrl && urlKey(c.result.finalUrl) === key))));
+    take(list.findLast((c) => c.name === "WebFetch" && (urlKey(c.input?.url) === key || (c.result?.finalUrl && urlKey(c.result.finalUrl) === key))), url);
   }
   const matched = found.sort((a, b) => a.at - b.at).slice(0, max);
-  return { wanted: cmds.length + urls.length, matched, pending };
+  return { wanted: cmds.length + urls.length, matched, pending, missing };
 }
 
 /** success, error or interrupted, or null when the call has no result (never rendered). */

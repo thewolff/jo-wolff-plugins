@@ -267,6 +267,64 @@ test("judge on, a command receipt with no matching call but an absolute file:lin
   assert.deepEqual(skippedLines(box), []);
 });
 
+test("judge on, two command receipts and only one ran, no file line → not judged on the partial record, one skipped.log line naming the command that was not found", () => {
+  const box = sandbox();
+  const judge = fakeJudge(box);
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  const path = writeTranscript(box, [...bashTurn(1, "c", ["npm test"]), assistant([text("**CLAIM**\n`npm test` → 3 pass and `npm run build` → built")])]);
+  const r = runStop(box, payload(box, path), env);
+  assertAllows(r, 10_000);
+  assert.equal(r.stdout, "");
+  assert.deepEqual(judge.calls(), []);
+  const lines = skippedLines(box);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^\S+Z hooks\/output-types-stop\.mjs line 1 \*\*CLAIM\*\* ".*" judge not run: the session record is incomplete: no Bash or WebFetch call in the last 16 MiB of the transcript matches `npm run build` \(it may have run in a subagent or an earlier session\)$/);
+});
+
+/** A one-call turn: `pwd` printed `out`. */
+const pwdTurn = (out) => [
+  user("where are we"),
+  assistant([{ type: "tool_use", id: "p1", name: "Bash", input: { command: "pwd" } }]),
+  user([{ type: "tool_result", tool_use_id: "p1", content: out }], { toolUseResult: { stdout: out, stderr: "", interrupted: false } }),
+];
+
+test("judge on, an explicit `$ pwd` receipt → matched to the pwd call; the judge receives its captured result", () => {
+  const box = sandbox();
+  const judge = fakeJudge(box);
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  const path = writeTranscript(box, [...pwdTurn("/srv/work"), assistant([text("**CLAIM**\n`$ pwd` → /srv/work")])]);
+  const r = runStop(box, payload(box, path), env);
+  assertAllows(r, 10_000);
+  assert.equal(r.stdout, "");
+  const [prompt] = judge.calls();
+  assert.ok(prompt.includes("\n<<<RECORD\n[shell command — success]\n$ pwd\nstatus: success\nexit code: unknown\n/srv/work\nRECORD "), prompt);
+  assert.deepEqual(skippedLines(box), []);
+});
+
+test("judge on, an explicit `$ pwd` receipt the captured result contradicts → the judge sees the real output and its fail reaches the person", () => {
+  const box = sandbox();
+  const judge = fakeJudge(box, "echo '{\"verdict\":\"fail\",\"reason\":\"pwd printed /srv/work\"}'");
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  const path = writeTranscript(box, [...pwdTurn("/srv/work"), assistant([text("**CLAIM**\n`$ pwd` → /home/other")])]);
+  const r = runStop(box, payload(box, path), env);
+  assertAllows(r, 10_000);
+  const [prompt] = judge.calls();
+  assert.ok(prompt.includes("<<<\n`$ pwd` → /home/other\n>>>"), prompt);
+  assert.ok(prompt.includes("\n$ pwd\nstatus: success\nexit code: unknown\n/srv/work\nRECORD "), prompt);
+  assert.match(r.json.systemMessage, /the judge says the receipt does not license it: pwd printed \/srv\/work/);
+});
+
+test("judge on, bare inline `pwd` (no '$ ', no shell fence) → not treated as a command: no record, no skipped.log line", () => {
+  const box = sandbox();
+  const judge = fakeJudge(box);
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  const path = writeTranscript(box, [...pwdTurn("/srv/work"), assistant([text("**CLAIM**\n`pwd` is /srv/work, see /srv/app/a.ts:3")])]);
+  assertAllows(runStop(box, payload(box, path), env), 10_000);
+  const [prompt] = judge.calls();
+  assert.ok(prompt && !prompt.includes("<<<RECORD"), prompt);
+  assert.deepEqual(skippedLines(box), []);
+});
+
 test("judge on, the record lookup fails: a throwing read propagates out of withRecords to the runner (which logs it and allows, as every throw); an unreadable transcript path is 'no transcript' and still allows", () => {
   const box = sandbox();
   const env = { ...box.env, ...configEnv(box, { judge: true, judgeCommand: "unused" }) };
