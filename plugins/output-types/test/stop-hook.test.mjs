@@ -248,17 +248,19 @@ test("judge on with the shared command: one call per receipted statement, a fail
   assertAllows(r, JUDGE_DEADLINE_MS);
   assert.equal(
     r.json.systemMessage,
-    "output-types: 3 labelled statements without a receipt that holds. Add the receipt or remove the label (unlabeled means unreceipted).\n" +
+    "output-types: 2 labelled statements without a receipt that holds. Add the receipt or remove the label (unlabeled means unreceipted).\n" +
       `  line 1 **CLAIM** "unreceipted one.": ${NEEDS.CLAIM}\n` +
-      '  line 3 **CLAIM** "receipted: /srv/a.ts:1": the judge says the receipt does not license it: the line does not say that\n' +
-      '  line 5 **CITE** "also receipted https://x.y/z": the judge says the receipt does not license it: the line does not say that',
+      '  line 3 **CLAIM** "receipted: /srv/a.ts:1": the judge says the receipt does not license it: the line does not say that',
   );
   const calls = judge.calls().split("\n---\n").filter(Boolean);
-  assert.equal(calls.length, 2);
+  // 0.3.3 (A6): the CITE's URL matches no WebFetch call and it has no file:line, so it is not sent.
+  assert.equal(calls.length, 1);
   assert.ok(calls[0].includes("Label: CLAIM\n") && calls[0].includes("<<<\nreceipted: /srv/a.ts:1\n>>>"));
-  assert.ok(calls[1].includes("Label: CITE\n") && calls[1].includes("also receipted https://x.y/z"));
   assert.ok(!judge.calls().includes("unreceipted one"));
-  assert.ok(!existsSync(join(box.root, "state", "output-types", "skipped.log")));
+  assert.ok(!judge.calls().includes("also receipted https://x.y/z"));
+  const skippedLines = readFileSync(join(box.root, "state", "output-types", "skipped.log"), "utf8").split("\n").filter(Boolean);
+  assert.equal(skippedLines.length, 1);
+  assert.match(skippedLines[0], /line 5 \*\*CITE\*\* "also receipted https:\/\/x\.y\/z" judge not run: no Bash or WebFetch call in the last 16 MiB of the transcript matches its command or URL/);
 });
 
 test("judge on, every verdict pass → no output; the plugin's own judgeCommand beats the shared file and the env var beats both", () => {
@@ -268,11 +270,12 @@ test("judge on, every verdict pass → no output; the plugin's own judgeCommand 
   const r = runStop(box, { input: stopPayload(box, transcript(box, RECEIPTED)), env: { XDG_CONFIG_HOME: dir } });
   assertAllows(r, JUDGE_DEADLINE_MS);
   assert.equal(r.stdout, "");
-  assert.equal(pass.calls().split("\n---\n").filter(Boolean).length, 2);
+  // 0.3.3 (A6): only the CLAIM with a file:line is judged; the unmatched URL CITE is a skipped.log line.
+  assert.equal(pass.calls().split("\n---\n").filter(Boolean).length, 1);
   const viaEnv = runStop(box, { input: stopPayload(box, transcript(box, RECEIPTED)), env: { XDG_CONFIG_HOME: dir, OUTPUT_TYPES_JUDGE_BIN: "echo '{\"verdict\":\"fail\",\"reason\":\"env\"}'" } });
   assertAllows(viaEnv, JUDGE_DEADLINE_MS);
   assert.match(viaEnv.json.systemMessage, /the judge says the receipt does not license it: env/);
-  assert.equal(pass.calls().split("\n---\n").filter(Boolean).length, 2, "the env judge was used, not the plugin's own");
+  assert.equal(pass.calls().split("\n---\n").filter(Boolean).length, 1, "the env judge was used, not the plugin's own");
 });
 
 test("judge dispatch errors: non-zero exit, no JSON, and a timeout each write one skipped.log line naming the source and leave the warning to the mechanical stage; the hook exits inside its budget", () => {
@@ -284,16 +287,19 @@ test("judge dispatch errors: non-zero exit, no JSON, and a timeout each write on
   assert.ok(r.json.systemMessage.startsWith("output-types: 2 labelled statements"), r.json.systemMessage);
   const skipped = join(box.root, "state", "output-types", "skipped.log");
   let lines = readFileSync(skipped, "utf8").split("\n").filter(Boolean);
+  // 0.3.3 (A6): the URL CITE matches no WebFetch call and has no file:line, so it is a "judge not run"
+  // line written before the judge stage; the CLAIM's judge error follows it.
   assert.equal(lines.length, 2);
-  assert.match(lines[0], new RegExp(`^\\S+Z hooks/output-types-stop\\.mjs line 8 \\*\\*CLAIM\\*\\* ".*" judge nonzero: exit 2 stderr="nope" \\(source=${join(dir, "judge", "config.json").replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\)$`));
-  assert.match(lines[1], /line 10 \*\*CITE\*\* .* judge nonzero: exit 2/);
+  assert.match(lines[0], /line 10 \*\*CITE\*\* .* judge not run: no Bash or WebFetch call/);
+  assert.match(lines[1], new RegExp(`^\\S+Z hooks/output-types-stop\\.mjs line 8 \\*\\*CLAIM\\*\\* ".*" judge nonzero: exit 2 stderr="nope" \\(source=${join(dir, "judge", "config.json").replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\)$`));
 
   const unparseable = runStop(box, { input: stopPayload(box, transcript(box, RECEIPTED)), env: { ...env, OUTPUT_TYPES_JUDGE_BIN: "echo plain words" } });
   assertAllows(unparseable, JUDGE_DEADLINE_MS);
   assert.equal(unparseable.stdout, "");
   lines = readFileSync(skipped, "utf8").split("\n").filter(Boolean);
   assert.equal(lines.length, 4);
-  assert.match(lines[2], /judge unparseable: exit 0 but no JSON object on stdout \(source=env OUTPUT_TYPES_JUDGE_BIN\)$/);
+  assert.match(lines[2], /judge not run: no Bash or WebFetch call/);
+  assert.match(lines[3], /judge unparseable: exit 0 but no JSON object on stdout \(source=env OUTPUT_TYPES_JUDGE_BIN\)$/);
 
   // A judge that hangs is killed by its own clamped timer, inside the hook's deadline.
   const started = Date.now();
@@ -303,8 +309,8 @@ test("judge dispatch errors: non-zero exit, no JSON, and a timeout each write on
   assert.equal(slow.stdout, "", "a hanging judge is a skipped line, not a failed-open message");
   lines = readFileSync(skipped, "utf8").split("\n").filter(Boolean);
   assert.equal(lines.length, 6);
-  assert.match(lines[4], /judge timeout: no exit within \d+ ms \(source=env OUTPUT_TYPES_JUDGE_BIN\)$/);
-  assert.match(lines[5], /judge skipped: no time left in the hook's budget|judge timeout/);
+  assert.match(lines[4], /judge not run: no Bash or WebFetch call/);
+  assert.match(lines[5], /judge timeout: no exit within \d+ ms \(source=env OUTPUT_TYPES_JUDGE_BIN\)$/);
   assert.equal(box.readErrors(), "");
 });
 
@@ -361,7 +367,8 @@ test("handle() directly: the deadline constants, and a fake runner through the h
   const env = { ...box.env, XDG_CONFIG_HOME: dir };
   const run = async () => ({ verdict: "fail", reason: "r" });
   const out = await handle({ last_assistant_message: RECEIPTED }, { env, run });
-  assert.ok(out.systemMessage.includes("line 1 **CLAIM**") && out.systemMessage.includes("line 3 **CITE**"));
+  // 0.3.3 (A6): no transcript, so the URL CITE cannot be matched and is not judged; the CLAIM with a file:line is.
+  assert.ok(out.systemMessage.includes("line 1 **CLAIM**") && !out.systemMessage.includes("line 3 **CITE**"));
   assert.equal(await handle({ last_assistant_message: "no labels" }, { env, run }), null);
   assert.equal(await handle({ last_assistant_message: RECEIPTED }, { env: { ...env, OUTPUT_TYPES_CHECK: "OFF" }, run }), null);
 });

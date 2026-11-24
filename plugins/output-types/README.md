@@ -124,8 +124,9 @@ completed `Bash` call whose command contains it, or the newest `WebFetch` whose 
 URL is it (scheme and host compared without case, fragment dropped). The judge gets that call's
 result in a `<<<RECORD … RECORD <length>>>>` block, bounded (shell output 40 head and 20 tail lines,
 fetched text 6000 characters, at most 4 calls and 24,000 characters) and labelled with its exit
-code or `unknown`. A statement naming a command that matched no call and carrying no `file:line`
-is not judged; one skipped.log line says so. When the newest matching call has no captured result
+code or `unknown`. A statement naming a command or a URL that matched no call (or with no
+readable transcript, as on OMP) and carrying no `file:line` is not judged; one skipped.log line
+says so. A judge that is not Jev saw such statements in 0.3.2 and no longer does. When the newest matching call has no captured result
 yet, the statement is not judged either, and an older run is never used in its place. A statement
 with no command or URL is judged exactly as in 0.3.2.
 

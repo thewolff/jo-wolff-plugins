@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { withRecords } from "../hooks/output-types-stop.mjs";
+import { extractText, withRecords } from "../hooks/output-types-stop.mjs";
 import { BUDGET_MS, PLUGIN_ROOT, parseJson, sandbox } from "./helpers.mjs";
 
 const STOP_HOOK = join(PLUGIN_ROOT, "hooks", "output-types-stop.mjs");
@@ -191,6 +191,52 @@ test("judge on, a command receipt with no matching call and no file line → no 
   const lines = skippedLines(box);
   assert.equal(lines.length, 1);
   assert.match(lines[0], /^\S+Z hooks\/output-types-stop\.mjs line 1 \*\*CLAIM\*\* ".*" judge not run: no Bash or WebFetch call in the last 16 MiB of the transcript matches its command or URL/);
+});
+
+test("judge on, a URL receipt with no matching WebFetch call and no file line, transcript readable → no judge call, one skipped.log line saying no tool call matched, no extra warning", () => {
+  const box = sandbox();
+  const judge = fakeJudge(box);
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  const entries = [
+    user("look it up"),
+    assistant([{ type: "tool_use", id: "w1", name: "WebFetch", input: { url: "https://example.com/other", prompt: "p" } }]),
+    user([{ type: "tool_result", tool_use_id: "w1", content: "other page" }], { toolUseResult: { result: "other page", url: "https://example.com/other", code: 200 } }),
+    assistant([text("**CITE** per https://example.com/docs the cap is 100.")]),
+  ];
+  const r = runStop(box, payload(box, writeTranscript(box, entries)), env);
+  assertAllows(r, 10_000);
+  assert.equal(r.stdout, "");
+  assert.deepEqual(judge.calls(), []);
+  const lines = skippedLines(box);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^\S+Z hooks\/output-types-stop\.mjs line 1 \*\*CITE\*\* ".*" judge not run: no Bash or WebFetch call in the last 16 MiB of the transcript matches its command or URL/);
+});
+
+test("judge on, a URL receipt and no readable transcript (the plan's no-transcript rule: skipped, never judged on its text) → no judge call, one 'no transcript was readable' line", () => {
+  const box = sandbox();
+  const judge = fakeJudge(box);
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  const r = runStop(box, payload(box, join(box.root, "missing.jsonl"), { last_assistant_message: "**CITE** per https://example.com/docs the cap is 100." }), env);
+  assertAllows(r, 10_000);
+  assert.equal(r.stdout, "");
+  assert.deepEqual(judge.calls(), []);
+  const lines = skippedLines(box);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /line 1 \*\*CITE\*\* ".*" judge not run: no transcript was readable to match its command or URL against$/);
+});
+
+test("Stop with no last_assistant_message: the parent's final text is checked, not a later sidechain assistant entry", () => {
+  const box = sandbox();
+  const entries = [
+    user("go"),
+    assistant([text("**CLAIM**\nThe parent says this with no receipt.")]),
+    { ...assistant([text("**CLAIM**\nThe subagent says something else.")]), isSidechain: true },
+  ];
+  const r = runStop(box, payload(box, writeTranscript(box, entries)));
+  assertAllows(r);
+  assert.match(r.json.systemMessage, /line 1 \*\*CLAIM\*\* "The parent says this with no receipt\."/);
+  assert.ok(!r.json.systemMessage.includes("subagent says"));
+  assert.equal(extractText({ transcript_path: writeTranscript(box, entries, "t2.jsonl") }), "**CLAIM**\nThe parent says this with no receipt.");
 });
 
 test("judge on, a command receipt whose newest matching call has no result → not judged, an older failing run is not used, one evidence-unavailable line", () => {

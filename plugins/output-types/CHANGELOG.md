@@ -16,9 +16,10 @@ Release order: update the judge side first (`jev-judge/shape.ts`, `jev.ts`, `jev
 
 ### Changed
 
+- On Stop, when the payload has no `last_assistant_message`, the reply checked is the last assistant text with sidechain entries dropped, so a trailing subagent entry is never read as the parent's reply. The exported `extractText` follows the same rule.
 - Every transcript read is bounded to the last 16 MiB. `extractText` keeps its name and export but no longer loads the whole file, so a transcript past Node's string limit (about 512 MiB) no longer reads as empty.
 - `logSkipped(text, env, now, hook)` takes the hook file to stamp, and `judgeStage` passes `opts.hook` through, so skipped.log lines from the subagent path name `hooks/output-types-subagent-stop.mjs`.
-- With the judge on, a statement that names a command, matches no completed Bash call in the window, and has no absolute `file:line` is not sent to the judge: one skipped.log line says no tool call matched. A statement whose newest matching call has no captured result is not judged either (`evidence unavailable: newest matching <tool> call has no captured result`), and an older run is never put in its place. A statement that names only URLs and matches nothing is judged on its text, as in 0.3.2.
+- With the judge on, a statement that names a command or a URL, matches no completed Bash or WebFetch call in the window (or has no readable transcript to match against), and has no absolute `file:line` is not sent to the judge: one skipped.log line says no tool call matched, or that no transcript was readable. In 0.3.2 any judge received such a statement on its text alone; a judge that is not Jev now sees fewer statements. A statement whose newest matching call has no captured result is not judged either (`evidence unavailable: newest matching <tool> call has no captured result`), and an older run is never put in its place.
 
 ### Removed
 
