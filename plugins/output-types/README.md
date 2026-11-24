@@ -121,7 +121,8 @@ hook's own deadline fire first anyway, the judge's process group is killed as th
 **The session record.** With the judge on, a statement whose receipt names a command (`$ cmd`, or
 a command in inline code) or a URL is matched against the transcript's last 16 MiB: the newest
 completed `Bash` call whose command contains it, or the newest `WebFetch` whose requested or final
-URL is it (scheme and host compared without case, fragment dropped). The judge gets that call's
+URL is it (scheme and host compared without case, fragment dropped; for a cross-host redirect,
+which WebFetch reports without following, the final URL is the redirect target it names). The judge gets that call's
 result in a `<<<RECORD … RECORD <length>>>>` block, bounded (shell output 40 head and 20 tail lines,
 fetched text 6000 characters, at most 4 calls and 24,000 characters) and labelled with its exit
 code or `unknown`. A statement naming a command or a URL that matched no call (or with no

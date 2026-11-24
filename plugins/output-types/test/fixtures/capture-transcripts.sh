@@ -6,6 +6,12 @@
 #
 #   bash plugins/output-types/test/fixtures/capture-transcripts.sh
 #   CAPTURE_SETTING_SOURCES=user bash plugins/output-types/test/fixtures/capture-transcripts.sh
+#   CAPTURE_ONLY=webfetch bash plugins/output-types/test/fixtures/capture-transcripts.sh
+#
+# CAPTURE_ONLY=main runs only the main capture, CAPTURE_ONLY=webfetch only the WebFetch capture;
+# unset runs both. The WebFetch capture passes `--tools Bash WebFetch`: without that flag,
+# Claude Code 2.1.318 offered no WebFetch tool in a `claude -p` session (the main capture's
+# ToolSearch for it answered "No matching deferred tools found").
 #
 # The second form loads the user's own settings; on the machine these fixtures were captured on,
 # that is what gives subagents the SubagentHandback tool. Check the scrubbed files for anything
@@ -19,11 +25,19 @@
 # directory rewritten to /home/user and /work and harness bookkeeping entries dropped, so nothing
 # machine-specific lands in the repo:
 #   cc-main-turns.jsonl, cc-subagent-handback.jsonl, cc-stop-payload.json, cc-subagentstop-payload.json
+# The WebFetch capture is a second `claude -p` turn that fetches four public test URLs, one each:
+# a page that loads (https://example.com), a cross-host redirect (httpbin.org/redirect-to → example.org),
+# a 404 (httpbin.org/status/404) and a host that does not resolve (nonexistent.invalid). It writes
+#   cc-webfetch.jsonl
+# and then states its coverage: one line per kind (success, redirect, error), `captured` or
+# `MISSING`. Any MISSING → exit 3, "incomplete coverage", and the tests that need that kind have
+# no captured backing.
 # It also prints whether the subagent transcript held a SubagentHandback call when SubagentStop
 # fired (the payload file records the transcript's line count at that moment).
 #
 # How it fails: `claude` not on PATH → exit 75 with the reason. The run fails or writes no
-# transcript → exit 1 naming what is missing; the existing fixtures are left as they were.
+# transcript → exit 1 naming what is missing; the existing fixtures are left as they were. A
+# WebFetch capture missing a result kind → exit 3 after writing what it did capture.
 
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -54,6 +68,27 @@ SETTINGS=$(cat <<JSON
 JSON
 )
 
+# The two extra hooks write each run's payloads into its own directory under $CAP.
+settings_for() {
+  cat <<JSON
+{"hooks":{
+  "Stop":[{"hooks":[{"type":"command","command":"bash '$CAP/tee.sh' '$1/stop.json'"}]}],
+  "SubagentStop":[{"hooks":[{"type":"command","command":"bash '$CAP/tee.sh' '$1/subagentstop.json'"}]}]
+}}
+JSON
+}
+
+# Paths rewritten; harness bookkeeping entries (attachment, system, api-request-*: any entry that
+# is not a user or assistant entry) are dropped: they carry the session's whole prompt, hook notes and
+# tool listing, which the parser never reads and the repo should not hold.
+scrub() {
+  sed -e "s#$WORK#/work#g" -e "s#$HOME#/home/user#g" "$1" | node -e '
+    const lines = require("fs").readFileSync(0, "utf8").split("\n");
+    const keep = (l) => { if (!l.trim()) return false; try { const e = JSON.parse(l); return !e.type || ["user", "assistant"].includes(e.type); } catch { return true; } };
+    process.stdout.write(lines.filter(keep).join("\n") + "\n");'
+}
+
+capture_main() {
 PROMPT='This is a test of tool-call logging; follow the steps exactly and in order.
 1. Use the Bash tool three separate times: `echo one`, then `echo two`, then `ls -a`.
 2. Use the WebFetch tool on https://example.com with the prompt "Return the page title".
@@ -75,15 +110,6 @@ if [ -f "$CAP/subagentstop.json" ]; then
   SUB="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).agent_transcript_path||"")' "$CAP/subagentstop.json")"
 fi
 
-# Paths rewritten; harness bookkeeping entries (attachment, system, api-request-*: any entry that
-# is not a user or assistant entry) are dropped: they carry the session's whole prompt, hook notes and
-# tool listing, which the parser never reads and the repo should not hold.
-scrub() {
-  sed -e "s#$WORK#/work#g" -e "s#$HOME#/home/user#g" "$1" | node -e '
-    const lines = require("fs").readFileSync(0, "utf8").split("\n");
-    const keep = (l) => { if (!l.trim()) return false; try { const e = JSON.parse(l); return !e.type || ["user", "assistant"].includes(e.type); } catch { return true; } };
-    process.stdout.write(lines.filter(keep).join("\n") + "\n");'
-}
 scrub "$MAIN" > "$HERE/cc-main-turns.jsonl"
 scrub "$CAP/stop.json" > "$HERE/cc-stop-payload.json"
 if [ -n "$SUB" ] && [ -f "$SUB" ]; then
@@ -93,5 +119,49 @@ if [ -n "$SUB" ] && [ -f "$SUB" ]; then
 else
   echo "no SubagentStop payload or agent transcript captured"
 fi
+}
+
+capture_webfetch() {
+  local dir="$CAP/webfetch"
+  mkdir -p "$dir"
+  local prompt='This is a test of WebFetch result logging. Use the WebFetch tool four separate times, in this order, each with the prompt "Return the page title", and do not retry any fetch that fails or redirects:
+1. https://example.com
+2. https://httpbin.org/redirect-to?url=https%3A%2F%2Fexample.org%2F
+3. https://httpbin.org/status/404
+4. https://nonexistent.invalid/
+Then reply with one line per fetch saying what came back.'
+  claude -p "$prompt" --setting-sources "" --tools Bash WebFetch --settings "$(settings_for "$dir")" \
+    --allowedTools "WebFetch(domain:example.com)" "WebFetch(domain:httpbin.org)" "WebFetch(domain:example.org)" "WebFetch(domain:nonexistent.invalid)" \
+    --output-format json > "$dir/result.json" 2> "$dir/stderr.txt" || { echo "webfetch capture: claude -p failed: $(tail -3 "$dir/stderr.txt")"; exit 1; }
+  [ -f "$dir/stop.json" ] || { echo "webfetch capture: no Stop payload captured in $dir"; exit 1; }
+  local t
+  t="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).transcript_path||"")' "$dir/stop.json")"
+  [ -f "$t" ] || { echo "webfetch capture: transcript $t not found"; exit 1; }
+  scrub "$t" > "$HERE/cc-webfetch.jsonl"
+  # Coverage, from the scrubbed file: which result kinds a WebFetch call actually produced.
+  node -e '
+    const lines = require("fs").readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    const uses = new Map();
+    for (const e of lines) for (const p of (Array.isArray(e.message?.content) ? e.message.content : [])) if (p.type === "tool_use" && p.name === "WebFetch") uses.set(p.id, p.input?.url);
+    const kinds = { success: false, redirect: false, error: false };
+    for (const e of lines) for (const p of (Array.isArray(e.message?.content) ? e.message.content : [])) {
+      if (p.type !== "tool_result" || !uses.has(p.tool_use_id)) continue;
+      const text = typeof p.content === "string" ? p.content : JSON.stringify(p.content);
+      if (p.is_error) kinds.error = true;
+      else if (/redirect/i.test(text)) kinds.redirect = true;
+      else kinds.success = true;
+    }
+    console.log(`webfetch calls: ${uses.size}`);
+    for (const [k, v] of Object.entries(kinds)) console.log(`webfetch ${k}: ${v ? "captured" : "MISSING"}`);
+    if (!Object.values(kinds).every(Boolean)) { console.log("incomplete coverage: the WebFetch kinds marked MISSING have no captured backing"); process.exit(3); }
+  ' "$HERE/cc-webfetch.jsonl"
+}
+
+case "${CAPTURE_ONLY-}" in
+  main) capture_main ;;
+  webfetch) capture_webfetch ;;
+  "") capture_main; capture_webfetch ;;
+  *) echo "CAPTURE_ONLY must be main, webfetch or unset"; exit 64 ;;
+esac
 echo "captured into $HERE from $WORK"
 echo "check the scrubbed files for private text (other sessions' held questions, names) before committing them"

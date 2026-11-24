@@ -574,6 +574,8 @@ export function callStatus(call) {
   const r = call?.result;
   if (!r) return null;
   if (r.interrupted) return "interrupted";
+  // A WebFetch of a 4xx or 5xx page is not an is_error result; its HTTP status says it failed.
+  if (Number.isInteger(r.httpStatus) && r.httpStatus >= 400) return "error";
   return r.isError ? "error" : "success";
 }
 

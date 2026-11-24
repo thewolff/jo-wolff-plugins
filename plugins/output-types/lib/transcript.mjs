@@ -122,7 +122,7 @@ const INTERRUPTED = /^(?:\[Request interrupted by user|Interrupted by user|The u
 
 /**
  * Every tool call in `entries`, in order of its tool_use, paired with its result:
- * { id, name, input, at, result: { text, isError, interrupted, exitCode, finalUrl, raw } | null }.
+ * { id, name, input, at, result: { text, isError, interrupted, exitCode, finalUrl, httpStatus, raw } | null }.
  * A tool_use part repeated across split assistant entries counts once (deduplicated by id). A call
  * whose tool_result is not in `entries` (pending, torn, or past the window) has result null.
  *   text: for Bash, toolUseResult.stdout plus "\n" + stderr when stderr is non-empty (when
@@ -133,6 +133,10 @@ const INTERRUPTED = /^(?:\[Request interrupted by user|Interrupted by user|The u
  *   interrupted: toolUseResult.interrupted === true, or content that says the user interrupted,
  *         rejected or cancelled the call.
  *   finalUrl: for WebFetch, the redirect target the result names, else toolUseResult.url, else null.
+ *         Claude Code 2.1.318 writes the target as "Redirect URL (from the server's Location header …): <url>"
+ *         (captured in test/fixtures/cc-webfetch.jsonl); the bare "Redirect URL: <url>" form also matches.
+ *   httpStatus: for WebFetch, toolUseResult.code when it is a number (a 404 arrives with is_error
+ *         false and code 404), else null; null for every other tool.
  */
 export function toolCallsOf(entries) {
   const calls = [];
@@ -165,12 +169,14 @@ function resultOf(call, part, tur) {
   const isError = part.is_error === true;
   let text = contentText;
   let finalUrl = null;
+  let httpStatus = null;
   if (call.name === "Bash" && tur && typeof tur === "object" && typeof tur.stdout === "string") {
     text = tur.stdout + (typeof tur.stderr === "string" && tur.stderr ? `\n${tur.stderr}` : "");
   }
   if (call.name === "WebFetch") {
     if (tur && typeof tur === "object" && typeof tur.result === "string") text = tur.result;
-    const redirect = /Redirect URL:\s*(https?:\/\/\S+)/i.exec(contentText);
+    if (tur && typeof tur === "object" && Number.isInteger(tur.code)) httpStatus = tur.code;
+    const redirect = /^\s*Redirect URL\b[^:\n]*:\s*(https?:\/\/\S+)/im.exec(contentText);
     if (redirect) finalUrl = redirect[1];
     else if (tur && typeof tur === "object" && typeof tur.url === "string") finalUrl = tur.url;
   }
@@ -178,7 +184,7 @@ function resultOf(call, part, tur) {
   const code = /^(?:Error: )?Exit code (\d+)\b/m.exec(codeSource);
   const exitCode = code ? Number(code[1]) : null;
   const interrupted = (tur && typeof tur === "object" && tur.interrupted === true) || INTERRUPTED.test(contentText.trimStart());
-  return { text, isError, interrupted, exitCode, finalUrl, raw: part };
+  return { text, isError, interrupted, exitCode, finalUrl, httpStatus, raw: part };
 }
 
 /**
