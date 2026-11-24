@@ -281,6 +281,83 @@ test("judge on, two command receipts and only one ran, no file line → not judg
   assert.match(lines[0], /^\S+Z hooks\/output-types-stop\.mjs line 1 \*\*CLAIM\*\* ".*" judge not run: the session record is incomplete: no Bash or WebFetch call in the last 16 MiB of the transcript matches `npm run build` \(it may have run in a subagent or an earlier session\)$/);
 });
 
+/** A turn of Bash calls, each [command, output]. */
+const runTurn = (pairs) => {
+  const out = [user("run them")];
+  pairs.forEach(([command, stdout], i) => {
+    out.push(assistant([{ type: "tool_use", id: `r${i}`, name: "Bash", input: { command } }]));
+    out.push(user([{ type: "tool_result", tool_use_id: `r${i}`, content: stdout }], { toolUseResult: { stdout, stderr: "", interrupted: false } }));
+  });
+  return out;
+};
+
+for (const claim of ["`npm test` printed `tests 134`, `pass 134`", "`npm test` → `3 tests passed`", "`npm test` → ok, its output has `tests 134` and `pass 134`"]) {
+  test(`judge on, a command-plus-output receipt with a matching call → judged with the record, no skipped.log line: ${claim}`, () => {
+    const box = sandbox();
+    const judge = fakeJudge(box);
+    const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+    const path = writeTranscript(box, [...runTurn([["npm test", "3 tests passed\ntests 134\npass 134"]]), assistant([text(`**CLAIM**\n${claim}`)])]);
+    const r = runStop(box, payload(box, path), env);
+    assertAllows(r, 10_000);
+    assert.equal(r.stdout, "");
+    const [prompt] = judge.calls();
+    assert.ok(prompt && prompt.includes("\n<<<RECORD\n[shell command — success]\n$ npm test\nstatus: success\nexit code: unknown\n3 tests passed\ntests 134\npass 134\nRECORD "), prompt);
+    assert.deepEqual(skippedLines(box), []);
+  });
+}
+
+test("judge on, an output span the captured output contradicts → still judged with the real output, and the judge's fail reaches the person", () => {
+  const box = sandbox();
+  const judge = fakeJudge(box, "echo '{\"verdict\":\"fail\",\"reason\":\"npm test printed 1 failing\"}'");
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  const path = writeTranscript(box, [...runTurn([["npm test", "tests 3\npass 2\nfail 1"]]), assistant([text("**CLAIM**\n`npm test` printed `pass 3`, `fail 0`")])]);
+  const r = runStop(box, payload(box, path), env);
+  assertAllows(r, 10_000);
+  const [prompt] = judge.calls();
+  assert.ok(prompt && prompt.includes("\n$ npm test\nstatus: success\nexit code: unknown\ntests 3\npass 2\nfail 1\nRECORD "), prompt);
+  assert.deepEqual(skippedLines(box), []);
+  assert.match(r.json.systemMessage, /the judge says the receipt does not license it: npm test printed 1 failing/);
+});
+
+test("judge on, two commands with output spans and only one ran, no file line → still not judged on the partial record; the log names the one that never ran", () => {
+  const box = sandbox();
+  const judge = fakeJudge(box);
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  const path = writeTranscript(box, [...runTurn([["npm test", "pass 3"]]), assistant([text("**CLAIM**\n`npm test` printed `pass 3`, `npm run build` printed `built ok`")])]);
+  const r = runStop(box, payload(box, path), env);
+  assertAllows(r, 10_000);
+  assert.deepEqual(judge.calls(), []);
+  const lines = skippedLines(box);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /judge not run: the session record is incomplete: no Bash or WebFetch call in the last 16 MiB of the transcript matches `npm run build` \(it may have run in a subagent or an earlier session\)$/);
+});
+
+test("judge on, five commands and the record's cap of four calls, no file line → not judged on four of five; the log names the call left out and says the cap was the reason", () => {
+  const box = sandbox();
+  const judge = fakeJudge(box);
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  const cmds = ["npm run a1", "npm run a2", "npm run a3", "npm run a4", "npm run a5"];
+  const path = writeTranscript(box, [...runTurn(cmds.map((c) => [c, "ok"])), assistant([text(`**CLAIM**\n${cmds.map((c) => `\`${c}\` → ok`).join(", ")}`)])]);
+  const r = runStop(box, payload(box, path), env);
+  assertAllows(r, 10_000);
+  assert.deepEqual(judge.calls(), []);
+  const lines = skippedLines(box);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /judge not run: the session record is incomplete: the record holds at most 4 tool calls and left out `npm run a5`$/);
+});
+
+test("judge on, five commands past the cap with a file line → judged on the file line, and the record says a call was left out", () => {
+  const box = sandbox();
+  const judge = fakeJudge(box);
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  const cmds = ["npm run a1", "npm run a2", "npm run a3", "npm run a4", "npm run a5"];
+  const path = writeTranscript(box, [...runTurn(cmds.map((c) => [c, "ok"])), assistant([text(`**CLAIM**\n${cmds.map((c) => `\`${c}\` → ok`).join(", ")}, per /srv/app/package.json:3`)])]);
+  assertAllows(runStop(box, payload(box, path), env), 10_000);
+  const [prompt] = judge.calls();
+  assert.ok(prompt && prompt.includes("[omitted: 1 more tool call past the record's 4 calls]\nRECORD "), prompt);
+  assert.deepEqual(skippedLines(box), []);
+});
+
 /** A one-call turn: `pwd` printed `out`. */
 const pwdTurn = (out) => [
   user("where are we"),

@@ -238,13 +238,18 @@ function commandEnd(line) {
   return -1;
 }
 
-/** True when a line holds a command with `→`/`->` output after it on the same line or opening the next one. */
+/**
+ * True when a line holds a command with `→`/`->` output after it on the same line or opening the next
+ * one, or with an output word and its output quoted in code right after it on the same line
+ * (`` `npm test` printed `tests 134` ``). An output word with unquoted output is not enough.
+ */
 function commandPair(text) {
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const end = commandEnd(lines[i]);
     if (end === -1) continue;
     if (ARROW.test(lines[i].slice(end))) return true;
+    if (QUOTED_OUTPUT.test(lines[i].slice(end))) return true;
     if (i + 1 < lines.length && ARROW_LINE.test(lines[i + 1])) return true;
   }
   return false;
@@ -479,9 +484,17 @@ export const RECORD_MAX_CALLS = 4;
  * fence's first non-empty line). "$ " is stripped, anything from the first " → " or " -> " on is cut,
  * whitespace is trimmed. A one-word candidate is kept only when it is explicit: introduced by "$ ",
  * or the first line of a shell-tagged fence (sh, bash, zsh, shell, console, shellsession); any other
- * candidate with no whitespace is dropped (a bare `word` in inline code is too ambiguous). Deduplicated, in order.
+ * candidate with no whitespace is dropped (a bare `word` in inline code is too ambiguous). An inline
+ * span that quotes output is not a candidate: one right after an output word or arrow (OUTPUT_LEAD),
+ * or one listed right after an output span (LIST_JOIN) that has no output word of its own after it.
+ * Deduplicated, in order.
  */
 export function commandsNamed(text) {
+  return commandCandidates(text).map((c) => c.command);
+}
+
+/** commandsNamed with each candidate's `explicit` flag: true when "$ " or a shell-tagged fence introduced it. */
+function commandCandidates(text) {
   const src = String(text ?? "").replace(/\r\n?/g, "\n");
   const raw = []; // [candidate, explicit]
   const outside = src.replace(FENCE_RE, (block) => {
@@ -495,13 +508,27 @@ export function commandsNamed(text) {
     }
     return "\n";
   });
+  const inline = []; // [position, candidate, explicit]
+  let at = 0;
   for (const line of outside.split("\n")) {
-    if (DOLLAR_LEAD.test(line)) raw.push([line.replace(/^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+|>[ \t]*)*/, ""), true]);
-    for (const m of line.matchAll(CODE_SPAN)) {
-      if (/^\$ \S/.test(m[1])) raw.push([m[1], true]);
-      else if (/\S[ \t]+\S/.test(m[1])) raw.push([m[1], false]);
-    }
+    if (DOLLAR_LEAD.test(line)) inline.push([at, line.replace(/^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+|>[ \t]*)*/, ""), true]);
+    at += line.length + 1;
   }
+  // Inline code spans, each read as a command or as quoted output (see OUTPUT_LEAD).
+  const spans = [...outside.matchAll(CODE_SPAN)];
+  let prevOutput = false;
+  spans.forEach((m, i) => {
+    const before = outside.slice(i ? spans[i - 1].index + spans[i - 1][0].length : 0, m.index);
+    const after = outside.slice(m.index + m[0].length, i + 1 < spans.length ? spans[i + 1].index : outside.length);
+    const explicit = /^\$ \S/.test(m[1]);
+    const output = !explicit && (OUTPUT_LEAD.test(before) || (prevOutput && LIST_JOIN.test(before) && !OUTPUT_MARK.test(after)));
+    prevOutput = output;
+    if (output) return;
+    if (explicit) inline.push([m.index, m[1], true]);
+    else if (/\S[ \t]+\S/.test(m[1])) inline.push([m.index, m[1], false]);
+  });
+  inline.sort((a, b) => a[0] - b[0]);
+  raw.push(...inline.map(([, c, e]) => [c, e]));
   const out = [];
   for (const [r, explicit] of raw) {
     const c = r
@@ -509,10 +536,28 @@ export function commandsNamed(text) {
       .replace(/^\$ /, "")
       .split(/ (?:→|->) /)[0]
       .trim();
-    if (c && (explicit || /\s/.test(c)) && !out.includes(c)) out.push(c);
+    const seen = out.find((o) => o.command === c);
+    if (seen) seen.explicit ||= explicit;
+    else if (c && (explicit || /\s/.test(c))) out.push({ command: c, explicit });
   }
   return out;
 }
+
+/**
+ * Words that put quoted output after them: "`npm test` printed `tests 134`", "`npm test` → `3 passed`".
+ * A span whose preceding text (back to the previous span) ends in one of these is output, not a command.
+ */
+const OUTPUT_WORDS = String.raw`→|->|=>|\b(?:printed|prints|returned|returns|gave|gives|shows|showed|output|outputs|says|said|reads|listed|lists|reported|reports|exited with|exits with)\b`;
+const OUTPUT_LEAD = new RegExp(String.raw`(?:${OUTPUT_WORDS})[ \t]*:?[ \t]*$`, "i");
+/** The text after a span holds an output marker: that span is a command with its own output. */
+const OUTPUT_MARK = new RegExp(OUTPUT_WORDS, "i");
+/**
+ * What joins one output span to the next in a list: "`tests 134`, `pass 134`", "`a`, and `b`",
+ * "`a` with `b`". Never "then" or ";", after which the next span is read as a command again.
+ */
+const LIST_JOIN = /^\s*,?\s*(?:(?:and|or|plus|with)\s+)?$/i;
+/** After a command span: words or other spans, an output word, and the output quoted in code (commandPair). */
+const QUOTED_OUTPUT = new RegExp(String.raw`^(?:[^\x60]|\x60[^\x60\n]*\x60)*?(?:${OUTPUT_WORDS})[ \t]*:?[ \t]*\x60[^\x60\n]+\x60`, "i");
 
 /** A fence opener whose info string names a shell. */
 const SHELL_FENCE = /^[ \t]*(?:`{3,}|~{3,})[ \t]*(?:sh|bash|zsh|shell|console|shellsession)\b/i;
@@ -567,10 +612,17 @@ export function urlKey(url) {
  *   pending: the tool name of each candidate whose newest matching call has no captured result; an
  *            older completed run is never put in its place.
  *   missing: each command or URL candidate no call matched at all, in order, also when others matched.
+ *            A candidate whose text is in a matched call's command or captured output (commandIn) is
+ *            not missing, unless "$ " or a shell fence made it explicit: it is quoted output, or a URL the command fetched, and its evidence is in
+ *            the record.
+ *   dropped: the matched calls past `max`, newest last; the caller treats them like missing, so a
+ *            statement is never judged on part of its calls without saying so.
  */
 export function receiptCalls(statement, calls, { max = RECORD_MAX_CALLS } = {}) {
   const text = statement?.text ?? "";
-  const cmds = commandsNamed(text);
+  const named = commandCandidates(text);
+  const cmds = named.map((c) => c.command);
+  const explicit = new Set(named.filter((c) => c.explicit).map((c) => c.command));
   const urls = urlsNamed(text);
   const list = Array.isArray(calls) ? calls : [];
   const found = [];
@@ -586,8 +638,16 @@ export function receiptCalls(statement, calls, { max = RECORD_MAX_CALLS } = {}) 
     const key = urlKey(url);
     take(list.findLast((c) => c.name === "WebFetch" && (urlKey(c.input?.url) === key || (c.result?.finalUrl && urlKey(c.result.finalUrl) === key))), url);
   }
-  const matched = found.sort((a, b) => a.at - b.at).slice(0, max);
-  return { wanted: cmds.length + urls.length, matched, pending, missing };
+  found.sort((a, b) => a.at - b.at);
+  // An explicit "$ " command is always a command, never quoted output.
+  const covered = (candidate) => !explicit.has(candidate) && found.some((c) => commandIn(candidate, c.input?.command) || commandIn(candidate, c.result?.text));
+  return {
+    wanted: cmds.length + urls.length,
+    matched: found.slice(0, max),
+    pending,
+    missing: missing.filter((m) => !covered(m)),
+    dropped: found.slice(max),
+  };
 }
 
 /** success, error or interrupted, or null when the call has no result (never rendered). */
@@ -639,25 +699,36 @@ function fetchBlock(call, status) {
  * blank line; whole trailing blocks are dropped past RECORD_MAX_CHARS, and a last line says how many.
  * A call without a result, or of another tool, is not rendered. "" when nothing is rendered.
  */
-export function renderRecord(matched) {
+export function renderRecord(matched, opts) {
+  return renderRecordParts(matched, opts).text;
+}
+
+/**
+ * renderRecord's text plus `omitted`, the rendered calls the character cap cut. `capped` (how many
+ * calls receiptCalls dropped past its call cap) adds a last line saying so, after the character one.
+ */
+export function renderRecordParts(matched, { capped = 0 } = {}) {
   const blocks = [];
   for (const call of matched ?? []) {
     const status = callStatus(call);
     if (!status) continue;
-    if (call.name === "Bash") blocks.push(shellBlock(call, status));
-    else if (call.name === "WebFetch") blocks.push(fetchBlock(call, status));
+    if (call.name === "Bash") blocks.push([call, shellBlock(call, status)]);
+    else if (call.name === "WebFetch") blocks.push([call, fetchBlock(call, status)]);
   }
   const kept = [];
   let used = 0;
-  for (const b of blocks) {
+  for (const [, b] of blocks) {
     const add = (kept.length ? 2 : 0) + b.length;
-    if (used + add > RECORD_MAX_CHARS - 80) break;
+    if (used + add > RECORD_MAX_CHARS - 160) break;
     kept.push(b);
     used += add;
   }
-  const dropped = blocks.length - kept.length;
-  if (dropped) kept.push(`[omitted: ${dropped} more tool call${dropped === 1 ? "" : "s"} past the record's ${RECORD_MAX_CHARS} characters]`);
-  return kept.join("\n\n");
+  const omitted = blocks.slice(kept.length).map(([call]) => call);
+  const plural = (n) => `${n} more tool call${n === 1 ? "" : "s"}`;
+  if (!blocks.length) return { text: "", omitted };
+  if (omitted.length) kept.push(`[omitted: ${plural(omitted.length)} past the record's ${RECORD_MAX_CHARS} characters]`);
+  if (capped) kept.push(`[omitted: ${plural(capped)} past the record's ${RECORD_MAX_CALLS} calls]`);
+  return { text: kept.join("\n\n"), omitted };
 }
 
 /** True when a statement carries an absolute file:line, which the judge can read from disk without a record. */
