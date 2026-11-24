@@ -18,10 +18,10 @@ test("plugin.json and package.json agree on name and version", () => {
 
 // Spelling and quoting of the commands are exercised by e2e.test.mjs, which runs them through sh -c;
 // this only checks that each registered command names a hook file that exists.
-test("hooks.json registers one SessionStart command and one Stop command (timeout 60, room for the judge), each resolving to a hook script that exists", () => {
+test("hooks.json registers one SessionStart, one Stop and one SubagentStop command (Stop and SubagentStop at timeout 60, room for the judge), each resolving to a hook script that exists", () => {
   const hooks = read("hooks", "hooks.json").hooks;
-  assert.deepEqual(Object.keys(hooks), ["SessionStart", "Stop"]);
-  for (const event of ["SessionStart", "Stop"]) {
+  assert.deepEqual(Object.keys(hooks), ["SessionStart", "Stop", "SubagentStop"]);
+  for (const event of ["SessionStart", "Stop", "SubagentStop"]) {
     const entries = hooks[event].flatMap((h) => h.hooks);
     assert.equal(entries.length, 1, event);
     assert.equal(entries[0].type, "command");
@@ -31,6 +31,9 @@ test("hooks.json registers one SessionStart command and one Stop command (timeou
   }
   assert.equal(hooks.Stop[0].hooks[0].command, 'node "${CLAUDE_PLUGIN_ROOT}/hooks/output-types-stop.mjs"');
   assert.equal(hooks.Stop[0].hooks[0].timeout, 60);
+  assert.equal(hooks.SubagentStop[0].hooks[0].command, 'node "${CLAUDE_PLUGIN_ROOT}/hooks/output-types-subagent-stop.mjs"');
+  assert.equal(hooks.SubagentStop[0].hooks[0].timeout, 60);
+  assert.equal(hooks.SubagentStop[0].matcher, undefined, "no matcher: every agent type, internal agents included");
 });
 
 test("the vendored lib/judge.mjs and lib/hook-runner.mjs are plugin-kit's, byte for byte (when the kit is checked out beside this plugin)", () => {
