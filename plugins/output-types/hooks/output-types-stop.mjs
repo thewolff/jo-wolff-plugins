@@ -47,7 +47,9 @@ import {
   nameOf,
   noJudgeReason,
   receiptCalls,
-  renderRecord,
+  RECORD_MAX_CALLS,
+  RECORD_MAX_CHARS,
+  renderRecordParts,
   renderWarning,
   renderZeroLabel,
   urlsNamed,
@@ -131,6 +133,12 @@ export function zeroLabel(text, session, { env = process.env, who = null } = {})
   return { systemMessage: renderZeroLabel({ count, boundaryFound, who }) };
 }
 
+/** A call as a skipped.log line names it: its command, whitespace folded and cut at 200 characters, or its URL. */
+const callName = (call) => {
+  const what = String(call.name === "WebFetch" ? call.input?.url : call.input?.command).replace(/\s+/g, " ").trim();
+  return `\`${what.length > 200 ? `${what.slice(0, 200)}…` : what}\``;
+};
+
 /**
  * The receipted statements to put to the judge, each with its session record: a statement that names
  * a command or URL gets the matching completed Bash or WebFetch calls from the transcript window
@@ -138,7 +146,10 @@ export function zeroLabel(text, session, { env = process.env, who = null } = {})
  * line each and nothing for the person: the newest matching call has no captured result; or the
  * statement names a command or a URL, nothing matched (or no transcript was readable), and it has
  * no absolute file:line either; or some of its commands or URLs matched, others did not, and it has
- * no absolute file:line (the log line names each one that matched nothing).
+ * no absolute file:line (the log line names each one that matched nothing); or the record's cap of
+ * RECORD_MAX_CALLS calls or RECORD_MAX_CHARS characters left a matched call out, and it has no
+ * absolute file:line (the log line names each call left out and the cap). With a file:line the
+ * statement is judged and the record's last lines say what was left out.
  */
 export function withRecords(receipted, session, { env = process.env, hook = HOOK_FILE } = {}) {
   const out = [];
@@ -158,17 +169,22 @@ export function withRecords(receipted, session, { env = process.env, hook = HOOK
       unmatched("no transcript was readable to match its command or URL against");
       continue;
     }
-    const { matched, pending, missing } = receiptCalls(s, calls);
+    const { matched, pending, missing, dropped } = receiptCalls(s, calls);
     if (pending.length) {
       skip(s, `evidence unavailable: newest matching ${pending[0]} call has no captured result`);
       continue;
     }
-    const record = renderRecord(matched);
-    // Some candidates matched and some did not: the same rule as nothing matching (judged only on
-    // a file:line), so a partial record never stands in for the whole receipt.
-    if (record && missing.length) {
+    const { text: record, omitted } = renderRecordParts(matched, { capped: dropped.length });
+    // Some candidates matched and some did not, or a cap left matched calls out of the record: the
+    // same rule as nothing matching (judged only on a file:line), so a partial record never stands
+    // in for the whole receipt.
+    const gaps = [];
+    if (missing.length) gaps.push(`no Bash or WebFetch call in the last 16 MiB of the transcript matches ${missing.map((m) => `\`${m}\``).join(", ")} (it may have run in a subagent or an earlier session)`);
+    if (dropped.length) gaps.push(`the record holds at most ${RECORD_MAX_CALLS} tool calls and left out ${dropped.map(callName).join(", ")}`);
+    if (omitted.length) gaps.push(`the record holds at most ${RECORD_MAX_CHARS} characters and left out ${omitted.map(callName).join(", ")}`);
+    if (record && gaps.length) {
       if (hasFileLine(s)) out.push({ ...s, record });
-      else skip(s, `the session record is incomplete: no Bash or WebFetch call in the last 16 MiB of the transcript matches ${missing.map((m) => `\`${m}\``).join(", ")} (it may have run in a subagent or an earlier session)`);
+      else skip(s, `the session record is incomplete: ${gaps.join("; ")}`);
     } else if (record) out.push({ ...s, record });
     else unmatched("no Bash or WebFetch call in the last 16 MiB of the transcript matches its command or URL (it may have run in a subagent or an earlier session)");
   }

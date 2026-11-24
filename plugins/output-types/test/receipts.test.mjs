@@ -155,6 +155,11 @@ test("CLAIM: a fence with the command and its output, a fenced command plus a re
   assert.equal(claim("`npm test` → exit 0, 12 passing"), null, "code with a space inside reads as a command");
   assert.equal(claim("`handle()` and `x` -> null"), NEEDS.CLAIM, "the prose between two spans is not a span");
   assert.equal(claim("ran `node --test`: it printed 46 pass"), NEEDS.CLAIM, "a result word is not an arrow");
+  assert.equal(claim("`npm test` printed `tests 134`, `pass 134`"), null, "a result word with the output quoted in code is the command and its result");
+  assert.equal(claim("`node --test` in `plugins/x` printed `tests 76`, `pass 76`"), null, "plain words and a path span between the command and the output word");
+  assert.equal(claim("`npm test` exited with `exit code 1`"), null);
+  assert.equal(claim("`handle()` returns `null`"), NEEDS.CLAIM, "a symbol before a quoted result is not a command");
+  assert.equal(claim("`npm test` printed\n`tests 3`"), NEEDS.CLAIM, "the quoted output is on the command's line");
   assert.equal(claim("`$ npm test`"), NEEDS.CLAIM, "a command alone");
   assert.equal(claim("`$ npm test`\nand then it was fine"), NEEDS.CLAIM, "the next line does not open with an arrow");
   assert.equal(claim("the tests exit 0"), NEEDS.CLAIM);

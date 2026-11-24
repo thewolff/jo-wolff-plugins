@@ -18,6 +18,7 @@ import {
   logSkipped,
   receiptCalls,
   renderRecord,
+  renderRecordParts,
   renderZeroLabel,
   urlKey,
   urlsNamed,
@@ -87,6 +88,67 @@ test("commandsNamed: a one-word command is kept when '$ ' introduces it or it si
   assert.deepEqual(commandsNamed("```\npwd\n```"), []);
 });
 
+test("commandsNamed: a span after an output marker is output, and so is a span listed right after an output span; a span that carries its own output marker is a command", () => {
+  // The receipt shapes in real use, paths made generic.
+  const shapes = [
+    ["`npm test` printed `tests 134`, `pass 134`", ["npm test"]],
+    ["`npm test` → `3 tests passed`", ["npm test"]],
+    ["`npm test` -> `3 tests passed`", ["npm test"]],
+    ["`node --test` in `plugins/x` printed `tests 128`, `pass 128`, `fail 0`, `skipped 0` (the baseline was 76).", ["node --test"]],
+    ["`git worktree add -b b /srv/wt origin/main`, then `node --test` in `plugins/x` printed `tests 76`, `pass 76`, `fail 0`.", ["git worktree add -b b /srv/wt origin/main", "node --test"]],
+    ["`grep -c 'a b' /srv/C.md` printed `0`, and `grep -c 'c d'` on the same file printed `1`.", ["grep -c 'a b' /srv/C.md", "grep -c 'c d'"]],
+    ["`grep -o '\"k\": [a-z]*' /srv/s.json` printed `\"k\": true`.", ["grep -o '\"k\": [a-z]*' /srv/s.json"]],
+    ["`node --test scripts/*.test.mjs` printed `tests 12`, `pass 12`, `fail 0`; `git status --short` printed nothing; `git log --oneline main..HEAD` listed `5d5b092`, `c219f33`.", ["node --test scripts/*.test.mjs", "git status --short", "git log --oneline main..HEAD"]],
+    ["`git rev-parse --short HEAD` printed `81e2a0c`, `git status --short | wc -l` printed `0`, `node --test` printed `pass 3`", ["git rev-parse --short HEAD", "git status --short | wc -l", "node --test"]],
+    ["`node /srv/ledger.mjs review status` printed `codex 1 0 ... findings` with `blocking 1, should 1`, `glm ... unavailable · timed out after 240s`, and `review.mode gate would deny a push`.", ["node /srv/ledger.mjs review status"]],
+    ["the output of `node /srv/ledger.mjs review --base main` printed `round 2 of 3`, `codex: findings: 1 blocking`, and `glm: unavailable`.", ["node /srv/ledger.mjs review --base main"]],
+    ["`node .../ledger.mjs doctor` printed `review judge unavailable: judge exited 1`, and `ls /srv/monitor` printed `No such file or directory`.", ["node .../ledger.mjs doctor", "ls /srv/monitor"]],
+    ["`node /srv/dist.mjs` over 61 transcripts under `/srv/projects`, output `'a': { long: 1572 }, 'b': { long: 957 }`.", ["node /srv/dist.mjs"]],
+    ["`/srv/s.json:419` reads `\"output-types@x\": true`", []],
+    ["`npm test` exited with `exit code 1`", ["npm test"]],
+    ["`npm test` returned `3 passed`, and `npm run build` returned `built ok`", ["npm test", "npm run build"]],
+  ];
+  for (const [text, want] of shapes) assert.deepEqual(commandsNamed(text), want, text);
+  // A list join is ", " or "and"/"or"/"with"/"plus" only: after "then" or ";" the next span is a command again.
+  assert.deepEqual(commandsNamed("`npm test` printed `ok 3`, then `git push origin x` ran"), ["npm test", "git push origin x"]);
+  assert.deepEqual(commandsNamed("`npm test` printed `ok 3`; `git push origin x` ran"), ["npm test", "git push origin x"]);
+  // An explicit "$ " span is a command even after a marker.
+  assert.deepEqual(commandsNamed("`a b` printed `$ rm -rf x`"), ["a b", "rm -rf x"]);
+});
+
+test("receiptCalls: an unmatched span or URL that appears in a matched call's captured output or command is evidence in the record, not a missing command", () => {
+  const calls = [bash("a", "npm test", 1, done({ text: "> node --test\ntests 134\npass 134" })), bash("u", "curl -sI https://x.y/z", 2, done({ text: "HTTP/2 200" }))];
+  assert.deepEqual(receiptCalls({ text: "`npm test`, whose output has `tests 134` and `pass 134`" }, calls).missing, []);
+  assert.deepEqual(receiptCalls({ text: "`curl -sI https://x.y/z` printed `HTTP/2 200`" }, calls).missing, []);
+  // Not in any matched call: still missing.
+  assert.deepEqual(receiptCalls({ text: "`npm test`, whose output has `tests 999`" }, calls).missing, ["tests 999"]);
+  assert.deepEqual(receiptCalls({ text: "`npm test` → ok, `npm run build` → ok" }, calls).missing, ["npm run build"]);
+  // An explicit "$ " command is never read as output, even when its text is in some output.
+  const tools = [bash("p", "pwd", 1, done({ text: "/srv/tools" }))];
+  assert.deepEqual(receiptCalls({ text: "`$ pwd` → /srv/tools and `$ ls` → empty" }, tools).missing, ["ls"]);
+  assert.deepEqual(receiptCalls({ text: "`$ pwd` → /srv/tools and `$ cat /srv/tools` → x" }, [bash("p", "pwd", 1, done({ text: "cat /srv/tools" }))]).missing, ["cat /srv/tools"]);
+});
+
+test("receiptCalls: calls past the cap are reported in dropped, never silently cut", () => {
+  const many = Array.from({ length: 5 }, (_, i) => bash(`m${i}`, `echo n${i} x`, i));
+  const five = Array.from({ length: 5 }, (_, i) => `\`echo n${i} x\``).join(", ");
+  const r = receiptCalls({ text: five }, many, { max: 4 });
+  assert.deepEqual(r.matched.map((c) => c.id), ["m0", "m1", "m2", "m3"]);
+  assert.deepEqual(r.dropped.map((c) => c.id), ["m4"]);
+  assert.deepEqual(r.missing, []);
+  assert.deepEqual(receiptCalls({ text: "`echo n0 x`" }, many).dropped, []);
+});
+
+test("renderRecordParts: the calls cut by the character cap are returned with the text, and renderRecord is its text", () => {
+  const big = (id, at) => fetch(id, `https://x.y/${id}`, at, done({ text: "z".repeat(5990) }));
+  const calls = [big("a", 1), big("b", 2), big("c", 3), big("d", 4)];
+  const parts = renderRecordParts(calls);
+  assert.deepEqual(parts.omitted.map((c) => c.id), ["d"]);
+  assert.match(parts.text, /\[omitted: 1 more tool call past the record's 24000 characters\]$/);
+  assert.equal(renderRecord(calls), parts.text);
+  assert.deepEqual(renderRecordParts([bash("s", "npm test", 1)]).omitted, []);
+});
+
 test("receiptCalls: every unmatched candidate is reported in missing, also when another candidate matched", () => {
   const calls = [bash("a", "npm test", 1)];
   const r = receiptCalls({ text: "`npm test` → ok and `npm run build` → ok per https://x.y/z" }, calls);
@@ -137,7 +199,7 @@ test("receiptCalls: newest matching Bash and WebFetch call per candidate, dedupl
   assert.equal(r.wanted, 3);
   assert.deepEqual(r.matched.map((c) => c.id), ["b", "c", "d"]);
   assert.deepEqual(r.pending, []);
-  assert.deepEqual(receiptCalls({ text: "at /a/b.ts:3" }, calls), { wanted: 0, matched: [], pending: [], missing: [] });
+  assert.deepEqual(receiptCalls({ text: "at /a/b.ts:3" }, calls), { wanted: 0, matched: [], pending: [], missing: [], dropped: [] });
   const none = receiptCalls({ text: "`make all` → ok" }, calls);
   assert.equal(none.wanted, 1);
   assert.deepEqual(none.matched, []);
