@@ -128,11 +128,12 @@ const INTERRUPTED = /^(?:\[Request interrupted by user|Interrupted by user|The u
  *   text: for Bash, toolUseResult.stdout plus "\n" + stderr when stderr is non-empty (when
  *         toolUseResult is an object with a string stdout), else the tool_result content text; for
  *         WebFetch, toolUseResult.result when it is a string, else the content text.
- *   exitCode: N when the content (or a string toolUseResult) starts with "Exit code N" or
- *         "Error: Exit code N"; else null. Claude Code records no code for a Bash call that succeeded.
+ *   exitCode: see exitCodeOf: structured metadata, else the start of an error result only; else
+ *         null. Claude Code records no code for a Bash call that succeeded.
  *   interrupted: toolUseResult.interrupted === true, or content that says the user interrupted,
  *         rejected or cancelled the call.
  *   finalUrl: for WebFetch, the redirect target the result names, else toolUseResult.url, else null.
+ *         Only inside the "REDIRECT DETECTED" envelope, and only with a 3xx status when one is present.
  *         Claude Code 2.1.318 writes the target as "Redirect URL (from the server's Location header …): <url>"
  *         (captured in test/fixtures/cc-webfetch.jsonl); the bare "Redirect URL: <url>" form also matches.
  *   httpStatus: for WebFetch, toolUseResult.code when it is a number (a 404 arrives with is_error
@@ -164,6 +165,21 @@ export function toolCallsOf(entries) {
   return calls;
 }
 
+/**
+ * A Bash exit code from structured metadata (an integer toolUseResult.exitCode or .code) when
+ * present; else only from the harness's error envelope: an is_error result whose content, or whose
+ * string toolUseResult, opens with "Exit code N" ("Error: Exit code N" for the string). A line
+ * that looks like one anywhere else is command output. Else null (rendered "unknown").
+ */
+function exitCodeOf(isError, contentText, tur) {
+  if (tur && typeof tur === "object") {
+    for (const k of ["exitCode", "code"]) if (Number.isInteger(tur[k])) return tur[k];
+  }
+  if (!isError) return null;
+  const m = /^Exit code (\d+)\b/.exec(contentText) ?? (typeof tur === "string" ? /^Error: Exit code (\d+)\b/.exec(tur) : null);
+  return m ? Number(m[1]) : null;
+}
+
 function resultOf(call, part, tur) {
   const contentText = resultText(part.content);
   const isError = part.is_error === true;
@@ -176,13 +192,15 @@ function resultOf(call, part, tur) {
   if (call.name === "WebFetch") {
     if (tur && typeof tur === "object" && typeof tur.result === "string") text = tur.result;
     if (tur && typeof tur === "object" && Number.isInteger(tur.code)) httpStatus = tur.code;
-    const redirect = /^\s*Redirect URL\b[^:\n]*:\s*(https?:\/\/\S+)/im.exec(contentText);
+    // A redirect target only from the harness's redirect envelope (the result opens with
+    // "REDIRECT DETECTED", cc-webfetch.jsonl), and only with a 3xx status when one was captured:
+    // a fetched page that quotes a "Redirect URL:" line is page text, not a redirect.
+    const envelope = /^\s*REDIRECT DETECTED\b/.test(contentText) && (httpStatus === null || (httpStatus >= 300 && httpStatus < 400));
+    const redirect = envelope ? /^\s*Redirect URL\b[^:\n]*:\s*(https?:\/\/\S+)/im.exec(contentText) : null;
     if (redirect) finalUrl = redirect[1];
     else if (tur && typeof tur === "object" && typeof tur.url === "string") finalUrl = tur.url;
   }
-  const codeSource = typeof tur === "string" ? `${contentText}\n${tur}` : contentText;
-  const code = /^(?:Error: )?Exit code (\d+)\b/m.exec(codeSource);
-  const exitCode = code ? Number(code[1]) : null;
+  const exitCode = exitCodeOf(isError, contentText, tur);
   const interrupted = (tur && typeof tur === "object" && tur.interrupted === true) || INTERRUPTED.test(contentText.trimStart());
   return { text, isError, interrupted, exitCode, finalUrl, httpStatus, raw: part };
 }

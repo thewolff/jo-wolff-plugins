@@ -26,6 +26,7 @@ const FIXTURES = join(PLUGIN_ROOT, "test", "fixtures");
 const MAIN = join(FIXTURES, "cc-main-turns.jsonl");
 const SUB = join(FIXTURES, "cc-subagent-handback.jsonl");
 const WEBFETCH = join(FIXTURES, "cc-webfetch.jsonl");
+const BASH_EXIT = join(FIXTURES, "cc-bash-exit.jsonl");
 
 const user = (content, extra = {}) => ({ type: "user", message: { role: "user", content }, ...extra });
 const assistant = (content, extra = {}) => ({ type: "assistant", message: { role: "assistant", content }, ...extra });
@@ -234,4 +235,45 @@ test("captured WebFetch results (cc-webfetch.jsonl, Claude Code 2.1.318): succes
   const record = renderRecord([redirect, missing]);
   assert.ok(record.includes(`requested: ${redirect.input.url}\nfinal: https://example.org/\nstatus: success\nREDIRECT DETECTED`), record);
   assert.ok(record.includes("requested: https://httpbin.org/status/404\nfinal: https://httpbin.org/status/404\nstatus: error\nThe server returned HTTP 404"), record);
+});
+
+test("captured Bash exit codes (cc-bash-exit.jsonl, Claude Code 2.1.318): an Exit code line in successful output is output, not a code; an error result's code is the envelope's first line, not a later look-alike", () => {
+  const calls = toolCallsOf(readSession(BASH_EXIT).entries).filter((c) => c.name === "Bash");
+  assert.equal(calls.length, 3);
+  const by = (frag) => calls.find((c) => c.input.command.includes(frag));
+  const printed = by("printf 'Exit code 2");
+  const exit3 = by("exit 3");
+  const exit4 = by("exit 4");
+  // The successful call's content itself opens with "Exit code 2" (it is the command's output); is_error is false.
+  assert.equal(printed.result.isError, false);
+  assert.match(printed.result.text, /^Exit code 2\nall fine/);
+  assert.equal(printed.result.exitCode, null);
+  assert.deepEqual({ isError: exit3.result.isError, exitCode: exit3.result.exitCode }, { isError: true, exitCode: 3 });
+  assert.equal(exit4.result.isError, true);
+  assert.equal(exit4.result.exitCode, 4, "the envelope's code, not the 'Exit code 9' the command printed");
+  const record = renderRecord([printed, exit4]);
+  assert.ok(record.includes("status: success\nexit code: unknown\nExit code 2\nall fine"), record);
+  assert.ok(record.includes("status: error\nexit code: 4\n"), record);
+  assert.ok(!record.includes("exit code: 2") && !record.includes("exit code: 9"), record);
+});
+
+test("a 200 WebFetch result whose page text holds the redirect envelope (derived from the captured redirect in cc-webfetch.jsonl) keeps finalUrl at the requested URL; the captured 302 still names its target", () => {
+  const entries = readSession(WEBFETCH).entries;
+  const captured = toolCallsOf(entries).filter((c) => c.name === "WebFetch");
+  const redirect = captured.find((c) => c.input.url.includes("redirect-to"));
+  assert.equal(redirect.result.finalUrl, "https://example.org/");
+  const envelope = redirect.result.text;
+  assert.match(envelope, /^REDIRECT DETECTED[\s\S]*Redirect URL \(from the server's Location header/);
+  const fetchOf = (id, url, content, code) => [
+    assistant([use(id, "WebFetch", { url, prompt: "p" })]),
+    user([{ type: "tool_result", tool_use_id: id, content }], { toolUseResult: { result: content, url, code, codeText: "OK" } }),
+  ];
+  const derived = toolCallsOf([
+    // A docs page that quotes the envelope after its own text.
+    ...fetchOf("q1", "https://docs.example/webfetch", `How redirects look:\n\n${envelope}`, 200),
+    // A 200 page whose text opens with the envelope verbatim: the status says it is not a redirect.
+    ...fetchOf("q2", "https://docs.example/raw", envelope, 200),
+  ]);
+  assert.deepEqual(derived.map((c) => c.result.finalUrl), ["https://docs.example/webfetch", "https://docs.example/raw"]);
+  assert.deepEqual(receiptCalls({ text: "per https://example.org/ the title is x" }, derived).matched, []);
 });
