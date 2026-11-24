@@ -1,0 +1,237 @@
+// zero-label-hook.test.mjs - the 0.3.3 additions to hooks/output-types-stop.mjs, as a spawned
+// process and through handle(): the zero-label warning and its turn boundary, its switches and
+// thresholds, the bounded read on a huge transcript, and the session record the judge receives.
+// Every case: exit 0, never a decision, never `continue`.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmodSync, closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
+import { join } from "node:path";
+import { withRecords } from "../hooks/output-types-stop.mjs";
+import { BUDGET_MS, PLUGIN_ROOT, parseJson, sandbox } from "./helpers.mjs";
+
+const STOP_HOOK = join(PLUGIN_ROOT, "hooks", "output-types-stop.mjs");
+const LONG = "This reply describes the work in plain prose and labels nothing. ".repeat(11).trim(); // 714 chars
+
+const user = (content, extra = {}) => ({ type: "user", message: { role: "user", content }, ...extra });
+const assistant = (content) => ({ type: "assistant", message: { role: "assistant", content } });
+const text = (t) => ({ type: "text", text: t });
+
+/** A turn of `n` Bash calls with results, opened by a human prompt. */
+function bashTurn(n, prefix = "c", commands = []) {
+  const out = [user(`run ${n} commands`)];
+  for (let i = 0; i < n; i++) {
+    const id = `${prefix}${i}`;
+    out.push(assistant([{ type: "tool_use", id, name: "Bash", input: { command: commands[i] ?? `echo step ${i}` } }]));
+    out.push(user([{ type: "tool_result", tool_use_id: id, content: `step ${i}` }], { toolUseResult: { stdout: `step ${i}`, stderr: "", interrupted: false } }));
+  }
+  return out;
+}
+
+function writeTranscript(box, entries, name = "s.jsonl") {
+  const dir = join(box.home, ".claude", "projects", "x");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, name);
+  writeFileSync(path, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+  return path;
+}
+
+const payload = (box, transcriptPath, extra = {}) => JSON.stringify({ session_id: "s", transcript_path: transcriptPath, cwd: box.work, hook_event_name: "Stop", stop_hook_active: false, ...extra });
+
+function runStop(box, input, env = {}) {
+  const started = Date.now();
+  const r = spawnSync(process.execPath, [STOP_HOOK], { cwd: box.work, env: { ...box.env, ...env }, input, encoding: "utf8", timeout: BUDGET_MS * 2, killSignal: "SIGKILL" });
+  return { ...r, ms: Date.now() - started, json: parseJson(r.stdout) };
+}
+
+function assertAllows(r, budget = BUDGET_MS) {
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.ms < budget, `took ${r.ms} ms`);
+  if (r.json) {
+    assert.equal(r.json.decision, undefined);
+    assert.equal(r.json.continue, undefined);
+    assert.equal(r.json.hookSpecificOutput, undefined);
+  }
+}
+
+function configEnv(box, config) {
+  const dir = join(box.root, "config");
+  mkdirSync(join(dir, "output-types"), { recursive: true });
+  writeFileSync(join(dir, "output-types", "config.json"), JSON.stringify(config));
+  return { XDG_CONFIG_HOME: dir };
+}
+
+// ─── the zero-label rule ────────────────────────────────────────────────────────────────
+
+test("zero labels, a 600-character reply and 3 tool calls this turn → one systemMessage naming the count; nothing else in the output", () => {
+  const box = sandbox();
+  const path = writeTranscript(box, [...bashTurn(3), assistant([text(LONG)])]);
+  const r = runStop(box, payload(box, path));
+  assertAllows(r);
+  assert.deepEqual(r.json, { systemMessage: "output-types: 3 tool calls this turn, 0 labelled statements. Label what you checked, or say nothing was checked." });
+  assert.equal(box.readErrors(), "");
+});
+
+test("zero labels after a 12-tool-call turn, but the latest turn ran none → no output (the turn boundary); an isMeta entry does not open a turn", () => {
+  const box = sandbox();
+  const path = writeTranscript(box, [...bashTurn(12), assistant([text("done")]), user("and one more question"), assistant([text(LONG)])]);
+  const r = runStop(box, payload(box, path));
+  assertAllows(r);
+  assert.equal(r.stdout, "");
+  const meta = writeTranscript(box, [...bashTurn(2), user("injected skill body", { isMeta: true }), ...bashTurn(2, "d").slice(1), assistant([text(LONG)])], "meta.jsonl");
+  const m = runStop(box, payload(box, meta));
+  assert.match(m.json.systemMessage, /^output-types: 4 tool calls this turn/);
+});
+
+test("zero labels below either threshold → no output; thresholds from config.json change the outcome; dispatch tools are not counted", () => {
+  const box = sandbox();
+  const short = writeTranscript(box, [...bashTurn(5), assistant([text("Short unlabeled reply.")])], "short.jsonl");
+  assert.equal(runStop(box, payload(box, short)).stdout, "");
+  const few = writeTranscript(box, [...bashTurn(2), assistant([text(LONG)])], "few.jsonl");
+  assert.equal(runStop(box, payload(box, few)).stdout, "");
+  const env = configEnv(box, { zeroLabelMinChars: 10, zeroLabelMinToolCalls: 2 });
+  assert.match(runStop(box, payload(box, few), env).json.systemMessage, /^output-types: 2 tool calls this turn/);
+  assert.match(runStop(box, payload(box, short), env).json.systemMessage, /^output-types: 5 tool calls this turn/);
+  const dispatch = [user("go"), assistant(["Agent", "Agent", "Agent", "ToolSearch", "TodoWrite"].map((name, i) => ({ type: "tool_use", id: `x${i}`, name, input: {} }))), assistant([text(LONG)])];
+  assert.equal(runStop(box, payload(box, writeTranscript(box, dispatch, "dispatch.jsonl"))).stdout, "");
+});
+
+test("OUTPUT_TYPES_ZERO_LABEL=off → no zero-label warning, the receipts warning still works; OUTPUT_TYPES_CHECK=off → nothing", () => {
+  const box = sandbox();
+  const path = writeTranscript(box, [...bashTurn(4), assistant([text(LONG)])]);
+  assert.equal(runStop(box, payload(box, path), { OUTPUT_TYPES_ZERO_LABEL: "off" }).stdout, "");
+  const labelled = writeTranscript(box, [...bashTurn(4), assistant([text(`${LONG}\n\n**CLAIM** the handler returns early.`)])], "l.jsonl");
+  assert.match(runStop(box, payload(box, labelled), { OUTPUT_TYPES_ZERO_LABEL: "off" }).json.systemMessage, /^output-types: 1 labelled statement without a receipt/);
+  assert.equal(runStop(box, payload(box, path), { OUTPUT_TYPES_CHECK: "off" }).stdout, "");
+});
+
+test("last_assistant_message with no transcript, or with an OMP-format transcript → no zero-label warning", () => {
+  const box = sandbox();
+  assert.equal(runStop(box, payload(box, join(box.root, "missing.jsonl"), { last_assistant_message: LONG })).stdout, "");
+  assert.equal(runStop(box, JSON.stringify({ hook_event_name: "Stop", last_assistant_message: LONG })).stdout, "");
+  const omp = [
+    { type: "message", message: { role: "user", content: [{ type: "text", text: "go" }] } },
+    ...Array.from({ length: 4 }, (_, i) => ({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: `o${i}`, name: "bash", arguments: { command: "ls" } }] } })),
+    ...Array.from({ length: 4 }, (_, i) => ({ type: "message", message: { role: "toolResult", toolCallId: `o${i}`, content: [{ type: "text", text: "ok" }] } })),
+  ];
+  assert.equal(runStop(box, payload(box, writeTranscript(box, omp, "omp.jsonl"), { last_assistant_message: LONG })).stdout, "");
+});
+
+test("a 200 MiB sparse transcript → the same answer as a small one, inside the 4 s mechanical deadline", () => {
+  const box = sandbox();
+  const path = join(box.root, "huge.jsonl");
+  const tail = [...bashTurn(3), assistant([text(LONG)])].map((e) => JSON.stringify(e)).join("\n") + "\n";
+  const fd = openSync(path, "w");
+  ftruncateSync(fd, 200 * 1024 * 1024);
+  writeSync(fd, "\n" + tail, 200 * 1024 * 1024);
+  closeSync(fd);
+  const r = runStop(box, payload(box, path));
+  assertAllows(r, 4_000);
+  assert.deepEqual(r.json, { systemMessage: "output-types: 3 tool calls this turn, 0 labelled statements. Label what you checked, or say nothing was checked." });
+});
+
+// ─── the session record ─────────────────────────────────────────────────────────────────
+
+/** A judge that appends each prompt to a file and prints `reply`. */
+function fakeJudge(box, reply = "echo '{\"verdict\":\"pass\",\"reason\":\"ok\"}'") {
+  const calls = join(box.root, "judge-calls");
+  const script = join(box.root, "judge.sh");
+  writeFileSync(script, `#!/bin/sh\ncat >> "${calls}"\nprintf '\\n---\\n' >> "${calls}"\n${reply}\n`);
+  chmodSync(script, 0o755);
+  return { command: script, calls: () => (existsSync(calls) ? readFileSync(calls, "utf8").split("\n---\n").filter(Boolean) : []) };
+}
+
+const skippedLines = (box) => {
+  const p = join(box.root, "state", "output-types", "skipped.log");
+  return existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean) : [];
+};
+
+test("judge on, a statement with a command receipt and a matching Bash call → the judge receives a prompt with the record block, and only that statement's call is in it", () => {
+  const box = sandbox();
+  const judge = fakeJudge(box);
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  const reply = "**CLAIM**\n`npm test` → 3 pass";
+  const path = writeTranscript(box, [...bashTurn(3, "c", ["npm run lint", "npm test", "npm run build"]), assistant([text(reply)])]);
+  const r = runStop(box, payload(box, path), env);
+  assertAllows(r, 10_000);
+  assert.equal(r.stdout, "");
+  const [prompt] = judge.calls();
+  assert.ok(prompt.includes("\n<<<RECORD\n[shell command — success]\n$ npm test\nstatus: success\nexit code: unknown\nstep 1\nRECORD "), prompt);
+  assert.ok(!prompt.includes("npm run lint") && !prompt.includes("npm run build"));
+  assert.equal(judge.calls().length, 1);
+});
+
+test("judge on, a statement with a URL receipt and a matching WebFetch call → the record carries the fetched text, bounded", () => {
+  const box = sandbox();
+  const judge = fakeJudge(box);
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  const entries = [
+    user("look it up"),
+    assistant([{ type: "tool_use", id: "w1", name: "WebFetch", input: { url: "https://example.com/Docs", prompt: "p" } }]),
+    user([{ type: "tool_result", tool_use_id: "w1", content: "<persisted-output>" }], { toolUseResult: { result: `the cap is 100. ${"x".repeat(9000)}`, url: "https://example.com/Docs", code: 200 } }),
+    assistant([text("**CITE** per https://example.com/Docs the cap is 100.")]),
+  ];
+  const r = runStop(box, payload(box, writeTranscript(box, entries)), env);
+  assertAllows(r, 10_000);
+  const [prompt] = judge.calls();
+  assert.ok(prompt.includes("[fetched https://example.com/Docs — the tool's result as the agent saw it, bounded by output-types]\nrequested: https://example.com/Docs\nfinal: https://example.com/Docs\nstatus: success\nthe cap is 100."), prompt.slice(0, 2000));
+  assert.ok(!prompt.includes("x".repeat(6001)));
+});
+
+test("judge on, a command receipt with no matching call and no file line → no judge call, one skipped.log line saying no tool call matched, no extra warning", () => {
+  const box = sandbox();
+  const judge = fakeJudge(box);
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  const path = writeTranscript(box, [...bashTurn(1), assistant([text("**CLAIM**\n`make all` → built")])]);
+  const r = runStop(box, payload(box, path), env);
+  assertAllows(r, 10_000);
+  assert.equal(r.stdout, "");
+  assert.deepEqual(judge.calls(), []);
+  const lines = skippedLines(box);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^\S+Z hooks\/output-types-stop\.mjs line 1 \*\*CLAIM\*\* ".*" judge not run: no Bash or WebFetch call in the last 16 MiB of the transcript matches its command or URL/);
+});
+
+test("judge on, a command receipt whose newest matching call has no result → not judged, an older failing run is not used, one evidence-unavailable line", () => {
+  const box = sandbox();
+  const judge = fakeJudge(box);
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  const entries = [
+    user("go"),
+    assistant([{ type: "tool_use", id: "a", name: "Bash", input: { command: "npm test" } }]),
+    user([{ type: "tool_result", tool_use_id: "a", content: "Exit code 1\nfail", is_error: true }]),
+    assistant([{ type: "tool_use", id: "b", name: "Bash", input: { command: "npm test" } }]),
+    assistant([text("**CLAIM**\n`npm test` → pass")]),
+  ];
+  const r = runStop(box, payload(box, writeTranscript(box, entries)), env);
+  assertAllows(r, 10_000);
+  assert.deepEqual(judge.calls(), []);
+  assert.match(skippedLines(box)[0], /judge not run: evidence unavailable: newest matching Bash call has no captured result$/);
+});
+
+test("judge on, a command receipt with no matching call but an absolute file:line → judged without a record", () => {
+  const box = sandbox();
+  const judge = fakeJudge(box);
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  const path = writeTranscript(box, [...bashTurn(1), assistant([text("**CLAIM**\n`make all` → built, see /srv/app/Makefile:12")])]);
+  assertAllows(runStop(box, payload(box, path), env), 10_000);
+  const [prompt] = judge.calls();
+  assert.ok(prompt && !prompt.includes("<<<RECORD"));
+  assert.deepEqual(skippedLines(box), []);
+});
+
+test("judge on, the record lookup fails: a throwing read propagates out of withRecords to the runner (which logs it and allows, as every throw); an unreadable transcript path is 'no transcript' and still allows", () => {
+  const box = sandbox();
+  const env = { ...box.env, ...configEnv(box, { judge: true, judgeCommand: "unused" }) };
+  const boom = () => {
+    throw new Error("transcript exploded");
+  };
+  assert.throws(() => withRecords([{ label: "CLAIM", line: 1, text: "`npm test` → ok" }], boom, { env }), /transcript exploded/);
+  // Through the spawned hook: a transcript path that is a directory reads as no transcript, never a throw past the runner.
+  const r = runStop(box, payload(box, box.root, { last_assistant_message: "**CLAIM**\n`npm test` → ok" }), configEnv(box, { judge: true, judgeCommand: fakeJudge(box).command }));
+  assertAllows(r, 10_000);
+  assert.equal(r.json?.decision, undefined);
+  assert.match(skippedLines(box)[0], /judge not run: no transcript was readable/);
+  assert.equal(box.readErrors(), "");
+});

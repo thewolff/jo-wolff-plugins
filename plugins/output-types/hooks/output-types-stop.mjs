@@ -33,46 +33,41 @@
 // handle() runs on a worker thread: it returns a plain object or null, never writes stdout or
 // exits, and passes env to the judge's spawn explicitly.
 
-import { readFileSync } from "node:fs";
 import { DEADLINE_MS, invokedDirectly, runHook } from "../lib/hook-runner.mjs";
-import { extractStatements, judgeEnabled, judgeFor, judgeStage, logSkipped, missingReceipt, noJudgeReason, renderWarning } from "../lib/receipts.mjs";
+import {
+  HOOK_FILE,
+  commandsNamed,
+  extractStatements,
+  hasFileLine,
+  judgeEnabled,
+  judgeFor,
+  judgeStage,
+  logSkipped,
+  missingReceipt,
+  nameOf,
+  noJudgeReason,
+  receiptCalls,
+  renderRecord,
+  renderWarning,
+  renderZeroLabel,
+  urlsNamed,
+  zeroLabelConfig,
+} from "../lib/receipts.mjs";
+import { handbackMessage, lastAssistantText, readSession, toolCallsOf, turnToolCalls } from "../lib/transcript.mjs";
 
 export const JUDGE_DEADLINE_MS = 55_000;
 
-/** The finished assistant text: the payload's last_assistant_message, else the transcript's last assistant text entry; "" when neither. */
+/**
+ * The finished assistant text: the payload's last_assistant_message, else the transcript's last
+ * assistant text entry; "" when neither. The transcript is read through lib/transcript.mjs, so only
+ * its last TAIL_BYTES are touched.
+ */
 export function extractText(payload) {
   if (!payload || typeof payload !== "object") return "";
   const direct = payload.last_assistant_message;
   if (typeof direct === "string" && direct.trim()) return direct;
-  const transcriptPath = typeof payload.transcript_path === "string" ? payload.transcript_path : "";
-  if (!transcriptPath) return "";
-  let lines;
-  try {
-    lines = readFileSync(transcriptPath, "utf8").split(/\r?\n/);
-  } catch {
-    return "";
-  }
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue; // a torn line in a JSONL transcript is not this hook's failure
-    }
-    if (!entry || typeof entry !== "object" || entry.type !== "assistant") continue;
-    const content = entry.message?.content ?? entry.content;
-    if (typeof content === "string" && content.trim()) return content;
-    if (!Array.isArray(content)) continue;
-    const text = content
-      .filter((part) => part && typeof part === "object" && part.type === "text" && typeof part.text === "string")
-      .map((part) => part.text)
-      .join("\n");
-    if (text.trim()) return text;
-    // An assistant entry with only tool calls is not the message; keep scanning backwards.
-  }
-  return "";
+  const session = readSession(typeof payload.transcript_path === "string" ? payload.transcript_path : "", { skipSidechain: false });
+  return session ? lastAssistantText(session.entries) : "";
 }
 
 const isOff = (env) => String(env.OUTPUT_TYPES_CHECK || "").toLowerCase() === "off";
@@ -84,16 +79,121 @@ function runnerStart(env) {
   return Number.isFinite(t) && t > 0 && t <= now ? t : now;
 }
 
+export const SUBAGENT_HOOK_FILE = "hooks/output-types-subagent-stop.mjs";
+
 /**
- * @param {object} input  the Stop payload
- * @returns {Promise<object|null>}  { systemMessage } naming the unreceipted statements, or null
+ * Where this event's report and evidence live.
+ *   Stop:         { event: "Stop", transcript: input.transcript_path, skipSidechain: true, who: null }
+ *   SubagentStop: { event: "SubagentStop", transcript: input.agent_transcript_path, skipSidechain: false,
+ *                   who: { agentType: String(input.agent_type ?? "") } }
+ * `hook` is the file skipped.log lines name.
+ */
+export function sourceFor(input) {
+  const str = (v) => (typeof v === "string" ? v : "");
+  if (input?.hook_event_name === "SubagentStop") {
+    return { event: "SubagentStop", transcript: str(input.agent_transcript_path), skipSidechain: false, who: { agentType: String(input.agent_type ?? "") }, hook: SUBAGENT_HOOK_FILE };
+  }
+  return { event: "Stop", transcript: str(input?.transcript_path), skipSidechain: true, who: null, hook: HOOK_FILE };
+}
+
+/**
+ * The report to check on SubagentStop: the delivered SubagentHandback message when the agent
+ * transcript has one after the turn start (last_assistant_message is then only the closing text);
+ * else input.last_assistant_message; else the last assistant text in the agent transcript; "" when none.
+ */
+export function extractReport(input, session) {
+  const handback = session ? handbackMessage(session) : "";
+  if (handback) return handback;
+  const direct = input?.last_assistant_message;
+  if (typeof direct === "string" && direct.trim()) return direct;
+  return session ? lastAssistantText(session.entries) : "";
+}
+
+const resolve = (session) => (typeof session === "function" ? session() : session);
+
+/**
+ * The zero-label rule: { systemMessage } or null. Null unless the rule is not off; on Stop,
+ * text.trim().length >= minChars (SubagentStop has no character floor: a subagent's report stands in
+ * for its work); a transcript was readable; and the current turn's tool-call count, with the ignore
+ * list applied, is >= minToolCalls. On SubagentStop it is also null when agent_type is "" (Claude
+ * Code's internal agents). `session` is a session or a function that reads one, called only when
+ * the cheaper checks pass.
+ */
+export function zeroLabel(text, session, { env = process.env, who = null } = {}) {
+  const config = zeroLabelConfig(env);
+  if (config.off) return null;
+  if (who && !who.agentType) return null;
+  if (!who && String(text ?? "").trim().length < config.minChars) return null;
+  const s = resolve(session);
+  if (!s) return null;
+  const { count, boundaryFound } = turnToolCalls(s, { ignore: config.ignore });
+  if (count < config.minToolCalls) return null;
+  return { systemMessage: renderZeroLabel({ count, boundaryFound, who }) };
+}
+
+/**
+ * The receipted statements to put to the judge, each with its session record: a statement that names
+ * a command or URL gets the matching completed Bash or WebFetch calls from the transcript window
+ * (the whole window: a receipt may come from earlier in the session). Not judged, one skipped.log
+ * line each and nothing for the person: the newest matching call has no captured result; or the
+ * statement names a command, nothing matched (or no transcript was readable), and it has no
+ * absolute file:line either. A statement that names only URLs and matched nothing is judged on its
+ * text, as in 0.3.2 (the 0.3.2 judge tests pin that).
+ */
+export function withRecords(receipted, session, { env = process.env, hook = HOOK_FILE } = {}) {
+  const out = [];
+  let calls;
+  const skip = (s, why) => logSkipped(`${nameOf(s)} judge not run: ${why}`, env, new Date(), hook);
+  for (const s of receipted) {
+    const namesCommand = commandsNamed(s.text).length > 0;
+    if (!namesCommand && !urlsNamed(s.text).length) {
+      out.push(s);
+      continue;
+    }
+    const unmatched = (why) => (hasFileLine(s) || !namesCommand ? out.push(s) : skip(s, why));
+    if (calls === undefined) {
+      const ses = resolve(session);
+      calls = ses ? toolCallsOf(ses.entries) : null;
+    }
+    if (!calls) {
+      unmatched("no transcript was readable to match its command against");
+      continue;
+    }
+    const { matched, pending } = receiptCalls(s, calls);
+    if (pending.length) {
+      skip(s, `evidence unavailable: newest matching ${pending[0]} call has no captured result`);
+      continue;
+    }
+    const record = renderRecord(matched);
+    if (record) out.push({ ...s, record });
+    else unmatched("no Bash or WebFetch call in the last 16 MiB of the transcript matches its command or URL (it may have run in a subagent or an earlier session)");
+  }
+  return out;
+}
+
+/**
+ * @param {object} input  the Stop or SubagentStop payload
+ * @returns {Promise<object|null>}  { systemMessage } naming the unreceipted statements, or the zero-label line, or null
  */
 export async function handle(input, { env = process.env, startedAt = runnerStart(env), budgetMs = null, run } = {}) {
   if (isOff(env)) return null;
-  const text = extractText(input);
+  const src = sourceFor(input);
+  // One bounded read, on demand: a short labelled reply that carries its own text costs nothing.
+  let raw;
+  const readRaw = () => (raw === undefined ? (raw = src.transcript ? readSession(src.transcript, { skipSidechain: false }) : null) : raw);
+  const session = () => {
+    const r = readRaw();
+    return r && src.skipSidechain ? { entries: r.entries.filter((e) => e.isSidechain !== true), whole: r.whole } : r;
+  };
+  let text;
+  if (src.event === "SubagentStop") text = extractReport(input, session());
+  else {
+    const direct = input?.last_assistant_message;
+    text = typeof direct === "string" && direct.trim() ? direct : readRaw() ? lastAssistantText(readRaw().entries) : "";
+  }
   if (!text) return null;
   const statements = extractStatements(text);
-  if (!statements.length) return null;
+  if (!statements.length) return zeroLabel(text, session, { env, who: src.who });
   const findings = [];
   const receipted = [];
   for (const s of statements) {
@@ -106,8 +206,10 @@ export async function handle(input, { env = process.env, startedAt = runnerStart
     // Under the runner the budget is the runner's own deadline (HOOK_RUNNER_DEADLINE_MS);
     // OUTPUT_TYPES_STOP_DEADLINE_MS is for tests: the runner's deadline and the judge budget follow it together.
     const budget = budgetMs ?? (Number(env.HOOK_RUNNER_DEADLINE_MS) || Number(env.OUTPUT_TYPES_STOP_DEADLINE_MS) || JUDGE_DEADLINE_MS);
-    if (judge) findings.push(...(await judgeStage(receipted, judge, { env, startedAt, budgetMs: budget, run })));
-    else logSkipped(noJudgeReason(env), env);
+    if (judge) {
+      const toJudge = withRecords(receipted, session, { env, hook: src.hook });
+      findings.push(...(await judgeStage(toJudge, judge, { env, startedAt, budgetMs: budget, run, hook: src.hook })));
+    } else logSkipped(noJudgeReason(env), env, new Date(), src.hook);
   }
   findings.sort((a, b) => a.statement.line - b.statement.line);
   const message = renderWarning(findings);
