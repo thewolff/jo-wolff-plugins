@@ -103,3 +103,32 @@ test("e2e: install → inject → edit the contract → off → broken contract 
   const status = spawnSync("git", ["status", "--porcelain"], { cwd: box.work, encoding: "utf8", timeout: BUDGET_MS });
   assert.equal(status.stdout, "");
 });
+
+test("e2e: a subagent's handback report with an unreceipted CLAIM, then the parent's long unlabeled relay after tool calls → one warning from each hook, nothing blocked", () => {
+  const box = sandbox();
+  const plugin = box.copyPlugin();
+  const dir = join(box.home, ".claude", "projects", "x");
+  mkdirSync(join(dir, "s", "subagents"), { recursive: true });
+  const sc = (e) => ({ ...e, isSidechain: true });
+  const agentPath = join(dir, "s", "subagents", "agent-1.jsonl");
+  const agent = [
+    sc({ type: "user", message: { role: "user", content: "check the route" } }),
+    sc({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "h", name: "SubagentHandback", input: { message: "**CLAIM** the route returns 404 on a missing id." } }] } }),
+  ];
+  writeFileSync(agentPath, agent.map((e) => JSON.stringify(e)).join("\n") + "\n");
+  const sub = hook(box, plugin, "SubagentStop", JSON.stringify({ session_id: "s1", hook_event_name: "SubagentStop", agent_type: "reader", agent_transcript_path: agentPath, last_assistant_message: "Done." }));
+  assert.deepEqual(Object.keys(sub), ["systemMessage"]);
+  assert.match(sub.systemMessage, /line 1 \*\*CLAIM\*\* "the route returns 404 on a missing id\."/);
+
+  const mainPath = join(dir, "s.jsonl");
+  const main = [{ type: "user", message: { role: "user", content: "what did the reader find?" } }];
+  for (let i = 0; i < 3; i++) {
+    main.push({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: `g${i}`, name: "Grep", input: { pattern: `p${i}` } }] } });
+    main.push({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: `g${i}`, content: "match" }] } });
+  }
+  main.push({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "The reader says the route returns 404 on a missing id. ".repeat(12) }] } });
+  writeFileSync(mainPath, main.map((e) => JSON.stringify(e)).join("\n") + "\n");
+  const stop = hook(box, plugin, "Stop", JSON.stringify({ session_id: "s1", transcript_path: mainPath, cwd: box.work, hook_event_name: "Stop", stop_hook_active: false }));
+  assert.deepEqual(stop, { systemMessage: "output-types: 3 tool calls this turn, 0 labelled statements. Label what you checked, or say nothing was checked." });
+  assert.equal(box.readErrors(), "");
+});
