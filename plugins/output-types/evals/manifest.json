@@ -8,6 +8,10 @@
     "Stop": [
       "systemMessage",
       "silent"
+    ],
+    "SubagentStop": [
+      "systemMessage",
+      "silent"
     ]
   },
   "unusedPayload": [
