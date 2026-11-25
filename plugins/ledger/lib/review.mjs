@@ -652,19 +652,28 @@ function freshId(item, { rounds, lab, head, at }) {
 /**
  * Step 1 of finding identity: each open serious reply item that repeats an owed item (one to
  * one, strongest match first) takes its id and raisedAt; a legacy owed item gets its id here.
+ * The same owed item also gives the repeat its `since` and receipt hash (`tag(item, prev)` fills
+ * them, prev null for a new item), so all four fields come from one match.
  * Returns { items, repeated }: `repeated` is the set of owed indexes a reply item repeats, so
  * every other owed item is dropped and goes to the judge (one reply item repeats one owed item).
  */
-function matchOwed(items, before, ctx) {
-  if (!before) return { items, repeated: new Set() };
-  const out = [...items];
-  const serious = (a) => !a.resolved && (a.severity === "blocking" || a.severity === "should");
+function matchOwed(items, before, ctx, tag = (it) => it) {
+  const prevs = new Array(items.length).fill(null);
   const repeated = new Set();
-  for (const [i, j] of pairUp(out, before.items, (a) => serious(a))) {
-    const o = before.items[j].id ? before.items[j] : freshId(before.items[j], ctx);
-    out[i] = { ...out[i], id: o.id, raisedAt: o.raisedAt };
-    repeated.add(j);
+  const serious = (a) => !a.resolved && (a.severity === "blocking" || a.severity === "should");
+  if (before) {
+    for (const [i, j] of pairUp(items, before.items, (a) => serious(a))) {
+      prevs[i] = before.items[j];
+      repeated.add(j);
+    }
   }
+  const out = items.map((it, i) => {
+    const prev = prevs[i];
+    const tagged = tag(it, prev);
+    if (!prev) return tagged;
+    const o = prev.id ? prev : freshId(prev, ctx);
+    return { ...tagged, id: o.id, raisedAt: o.raisedAt };
+  });
   return { items: out, repeated };
 }
 
@@ -1276,22 +1285,14 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
     // A finding the lab lists again keeps the `since` of the one it repeats; a new one starts here.
     // Likewise its receipt hash (0.4.10): a repeat keeps the hash of the receipt it was first raised
     // under (none, for an item from before 0.4.10); a new item gets the current receipt's.
-    const prevOf = (item) => before?.items.find((it) => stillListed(it, [item])) ?? null;
-    const sinceOf = (item) => {
-      const prev = prevOf(item);
-      return prev ? (prev.since ?? before.row.head_sha) : head;
-    };
-    const receiptOf = (item) => {
-      const prev = prevOf(item);
-      return prev ? (prev.receipt ?? null) : receiptSha;
-    };
-    const tagged = (it) => {
-      const out = { ...it, since: it.since ?? sinceOf(it) };
-      const rs = it.receipt ?? receiptOf(it);
+    // Both come from the owed item matchOwed pairs it with, the same one that gives its id (REV-02).
+    const tagged = (it, prev) => {
+      const out = { ...it, since: it.since ?? (prev ? (prev.since ?? before.row.head_sha) : head) };
+      const rs = it.receipt ?? (prev ? (prev.receipt ?? null) : receiptSha);
       if (rs) out.receipt = rs;
       return out;
     };
-    const owedMatch = matchOwed((r.items ?? []).map(tagged), before, ids);
+    const owedMatch = matchOwed(r.items ?? [], before, ids, tagged);
     if (r.items?.length) r = { ...r, items: owedMatch.items };
     const judged = [];
     const dropped = before ? before.items.filter((_, j) => !owedMatch.repeated.has(j)) : [];
