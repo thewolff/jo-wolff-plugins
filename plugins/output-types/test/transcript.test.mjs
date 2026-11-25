@@ -146,6 +146,30 @@ test("toolCallsOf: Bash success text from toolUseResult stdout plus stderr; fail
   assert.deepEqual(toolCallsOf([user([result("orphan", "x")])]), []);
 });
 
+test("toolCallsOf: a successful command whose own output says cancelled or interrupted is not marked interrupted", () => {
+  const entries = [
+    user("go"),
+    assistant([use("c", "Bash", { command: "npm test" }), use("p", "Bash", { command: "./jobs" }), use("c2", "Bash", { command: "npm test" }), use("p2", "Bash", { command: "./jobs" })]),
+    user([result("c", "0 tests cancelled\n12 pass")], { toolUseResult: { stdout: "0 tests cancelled\n12 pass", stderr: "", interrupted: false } }),
+    user([result("p", "interrupted 0 of 4 workers; all jobs finished")], { toolUseResult: { stdout: "interrupted 0 of 4 workers; all jobs finished", stderr: "", interrupted: false } }),
+    user([result("c2", "0 tests cancelled\n12 pass")]),
+    user([result("p2", "interrupted 0 of 4 workers; all jobs finished")]),
+  ];
+  for (const call of toolCallsOf(entries)) assert.equal(call.result.interrupted, false, call.id);
+});
+
+test("toolCallsOf: a real interruption or rejection is still marked interrupted, by the structured flag or the harness marker", () => {
+  const entries = [
+    user("go"),
+    assistant([use("i", "Bash", { command: "sleep 100" }), use("r", "Bash", { command: "rm -rf build" })]),
+    user([result("i", "[Request interrupted by user for tool use]", { is_error: true })], { toolUseResult: { stdout: "", stderr: "", interrupted: true } }),
+    user([result("r", "The user doesn't want to proceed with this tool use. The tool use was rejected.", { is_error: true })], { toolUseResult: "Error: The user doesn't want to proceed with this tool use. The tool use was rejected." }),
+  ];
+  const [i, r] = toolCallsOf(entries);
+  assert.equal(i.result.interrupted, true);
+  assert.equal(r.result.interrupted, true);
+});
+
 test("handbackMessage: the last SubagentHandback input.message after the turn start; '' when absent", () => {
   const entries = [user("brief"), assistant([use("h0", "SubagentHandback", { message: "old" })]), user("follow-up"), assistant([use("h1", "SubagentHandback", { message: "first" })]), assistant([use("h2", "SubagentHandback", { message: "the report" })]), user([result("h2", "delivered")])];
   assert.equal(handbackMessage({ entries }), "the report");
