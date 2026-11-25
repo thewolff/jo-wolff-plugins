@@ -652,16 +652,20 @@ function freshId(item, { rounds, lab, head, at }) {
 /**
  * Step 1 of finding identity: each open serious reply item that repeats an owed item (one to
  * one, strongest match first) takes its id and raisedAt; a legacy owed item gets its id here.
+ * Returns { items, repeated }: `repeated` is the set of owed indexes a reply item repeats, so
+ * every other owed item is dropped and goes to the judge (one reply item repeats one owed item).
  */
 function matchOwed(items, before, ctx) {
-  if (!before) return items;
+  if (!before) return { items, repeated: new Set() };
   const out = [...items];
   const serious = (a) => !a.resolved && (a.severity === "blocking" || a.severity === "should");
+  const repeated = new Set();
   for (const [i, j] of pairUp(out, before.items, (a) => serious(a))) {
     const o = before.items[j].id ? before.items[j] : freshId(before.items[j], ctx);
     out[i] = { ...out[i], id: o.id, raisedAt: o.raisedAt };
+    repeated.add(j);
   }
-  return out;
+  return { items: out, repeated };
 }
 
 /**
@@ -1287,9 +1291,10 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
       if (rs) out.receipt = rs;
       return out;
     };
-    if (r.items?.length) r = { ...r, items: matchOwed(r.items.map(tagged), before, ids) };
+    const owedMatch = matchOwed((r.items ?? []).map(tagged), before, ids);
+    if (r.items?.length) r = { ...r, items: owedMatch.items };
     const judged = [];
-    const dropped = before ? before.items.filter((it) => !stillListed(it, r.items ?? [])) : [];
+    const dropped = before ? before.items.filter((_, j) => !owedMatch.repeated.has(j)) : [];
     if (dropped.length) {
       judged.push(...(await judgeItems({ db, dbPath, config, env, top, fromSha: before.row.head_sha, toSha: head, items: dropped, receipt: receipt.text, receiptSha, receiptUnreadable: Boolean(receipt.unreadable) })));
     }
