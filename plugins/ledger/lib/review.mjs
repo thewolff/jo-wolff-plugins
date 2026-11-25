@@ -482,18 +482,36 @@ export function citedPaths(top, fromSha, toSha, texts) {
     const text = String(raw ?? "").normalize("NFC");
     const candidates = []; // { value, strict, quoted }
     const spans = quotedSpans(text);
-    for (const s of spans) if (/[/.]/.test(s.value)) candidates.push({ value: s.value.replace(/:\d+(?:-\d+)?$/, ""), strict: true, quoted: true });
+    // A quoted span is a path candidate when it has a slash or a dot, or when it names a tracked
+    // path or a tracked extensionless basename (`Makefile`), a trailing line number stripped.
+    const spanPath = (v) => {
+      const t = v.replace(/:\d+(?:-\d+)?$/, "").replace(/^\.\//, "");
+      return /[/.]/.test(t) || tracked.has(t) || basenames.has(t) ? t : null;
+    };
+    for (const s of spans) {
+      const v = spanPath(s.value);
+      if (v) candidates.push({ value: v, strict: true, quoted: true });
+    }
     // Every `X:N`: X runs back to a quote, parenthesis, whitespace or the start; a line number right
-    // after a closing quote belongs to that quoted span.
+    // after a closing quote belongs to that quoted span. Inside a quoted span, X runs back to
+    // whitespace or the span's start, and must resolve like any other cited path.
     const lineRefsOk = [];
     for (const m of text.matchAll(LINE_REF)) {
       const k = m.index;
       const span = spans.find((s) => s.end === k);
       if (span) {
-        lineRefsOk.push(/[/.]/.test(span.value) ? span.value.replace(/:\d+(?:-\d+)?$/, "") : null);
+        lineRefsOk.push(spanPath(span.value));
         continue;
       }
-      if (spans.some((s) => k > s.start && k < s.end)) continue; // inside a quoted span: the span is the candidate
+      const inside = spans.find((s) => k > s.start && k < s.end);
+      if (inside) {
+        let x = k;
+        while (x > inside.start + 1 && !/\s/.test(text[x - 1])) x--;
+        const value = text.slice(x, k).replace(/^\.\//, "");
+        if (value) candidates.push({ value, strict: true, quoted: true });
+        lineRefsOk.push(value || null);
+        continue;
+      }
       let x = k;
       while (x > 0 && !/[\s`"'(]/.test(text[x - 1])) x--;
       const value = text.slice(x, k).replace(/^\.\//, "");
