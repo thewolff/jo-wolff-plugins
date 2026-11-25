@@ -168,6 +168,25 @@ test("carry: two cited files, one quoted with a line number and one unquoted wit
   assert.equal(again(mk(), reply, ["b.txt", "changed\n"]).carried, false);
 });
 
+test("carry: a finding citing a.txt and a quoted extensionless Makefile; changing Makefile reopens, changing neither carries (R5-01)", () => {
+  for (const reply of ["1. [should] `a.txt` disagrees with `Makefile`", "1. [should] `a.txt`:1 disagrees with `Makefile:10`", "1. [should] `a.txt` disagrees with `Makefile`:10"]) {
+    const files = { Makefile: "all:\n" };
+    assert.equal(again(mk({}, files), reply).carried, true, reply);
+    const r = again(mk({}, files), reply, ["Makefile", "changed:\n"]);
+    assert.equal(r.carried, false, reply);
+    assert.match(r.out, /Makefile changed since, so it is open again/, reply);
+  }
+});
+
+test("carry: a line reference inside a quoted span must resolve; a quoted extensionless name that is not tracked does not count as a path (R5-01)", () => {
+  const b = mk({}, { Makefile: "all:\n" });
+  const head = git(b, "rev-parse", "HEAD");
+  assert.deepEqual(citedPaths(b.work, head, head, ["`a.txt` and `Nowhere:10`"]), { ok: false, why: "cites a path that does not resolve" });
+  assert.deepEqual(citedPaths(b.work, head, head, ["`a.txt` and `see foo:3`"]), { ok: false, why: "cites a path that does not resolve" });
+  assert.deepEqual(citedPaths(b.work, head, head, ["`a.txt` and `Makefile:10`"]), { ok: true, paths: ["a.txt", "Makefile"] });
+  assert.equal(citedPaths(b.work, head, head, ["`a.txt` uses `retry` here"]).ok, true, "a quoted identifier is not a path");
+});
+
 test("carry: an unquoted token with a tracked extension that resolves nowhere blocks the carry; a version number does not", () => {
   assert.equal(again(mk(), "1. [should] b.txt:1 and gone.txt disagree").carried, false);
   assert.equal(again(mk(), "1. [should] b.txt:1 breaks since 0.4.12").carried, true);
