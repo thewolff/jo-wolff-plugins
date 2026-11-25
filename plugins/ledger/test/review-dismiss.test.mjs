@@ -294,6 +294,28 @@ test("two similar prior findings, the reply lists only the first: the second goe
   assert.equal(decision(push(b)), "deny");
 });
 
+test("a reply item that repeats one of two similar owed findings takes id, raisedAt, since and receipt from that same owed item (REV-02)", () => {
+  const b = repo();
+  const top = b.work;
+  const h1 = git(b, "rev-parse", "HEAD");
+  const h2 = commit(b, "c.txt", "three\n");
+  const A = { id: "fd-aaaa", severity: "blocking", text: "b.txt:1 the parser drops the last line", since: h1, receipt: "a".repeat(64), raisedAt: "2026-11-20T00:00:00.000Z" };
+  const B = { id: "fd-bbbb", severity: "blocking", text: "b.txt:1 the parser drops the first line", since: h2, receipt: "b".repeat(64), raisedAt: "2026-11-22T00:00:00.000Z" };
+  const db = openDb(b);
+  try {
+    insert(db, { cwd: top, head: h2, base: git(b, "rev-parse", "main"), lab: "codex", verdict: "findings", findings: "x", items: [A, B], at: "2026-11-22T00:00:00.000Z" });
+  } finally {
+    db.close();
+  }
+  commit(b, "d.txt", "four\n");
+  const codex = stub(b, "codex", `1. [blocking] ${B.text}`);
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: codex.path, LEDGER_JUDGE_BIN: judge(b, "yes") });
+  const items = reviewRows(b).filter((x) => x.lab === "codex").at(-1).items;
+  const repeat = items.find((i) => !i.resolved);
+  assert.deepEqual([repeat.id, repeat.raisedAt, repeat.since, repeat.receipt], [B.id, B.raisedAt, B.since, B.receipt]);
+  assert.equal(items.find((i) => i.id === A.id)?.resolved, true, "A is judged as dropped");
+});
+
 test("a dismiss line mixed with prose applies nothing and the hook says to type it alone", () => {
   const { b, ids } = reviewed();
   const t = typed(b, `please record this for me\nreview dismiss ${ids[0]} wrong the line is right`);
