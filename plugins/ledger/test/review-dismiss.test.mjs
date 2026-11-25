@@ -1,12 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { cli, hook, openDb } from "./helpers.mjs";
 import { repo, git, commit, stub, review, push, decision, denyText, typed, reviewRows, dismissals, openIds, judge, SID } from "./review-helpers.mjs";
-import { branchRounds, headState, outstanding, publishLabRow } from "../lib/review.mjs";
+import { branchRounds, dismiss, headState, outstanding, publishLabRow } from "../lib/review.mjs";
+import { openStore } from "../lib/store.mjs";
+import { nowIso } from "../lib/time.mjs";
+
+const HOOK_PATH = new URL("../hooks/user-prompt.mjs", import.meta.url).pathname;
 
 const insert = (db, r) =>
   db
@@ -231,4 +236,132 @@ test("a dismiss line mixed with prose applies nothing and the hook says to type 
   const fresh = repo();
   const r = hook(fresh, "user-prompt", { cwd: fresh.work, hook_event_name: "UserPromptSubmit", prompt: "thanks\nreview waive ship it" });
   assert.equal(r.json.systemMessage, "ledger: the review waive line was not applied: a prompt applies ledger lines only when every line is one; type it on its own");
+});
+
+// ---- Races: dismiss reads and writes in one BEGIN IMMEDIATE; order is insertion id (T4) ----
+
+const REVIEW_LIB = new URL("../lib/review.mjs", import.meta.url).href;
+
+/** In-process dismiss against the sandbox store, as the prompt hook would call it. */
+function dismissNow(b, findingId, opts = {}) {
+  const store = openStore({ env: b.env, cwd: b.work });
+  try {
+    return dismiss({ db: store.db, dbPath: store.dbPath, via: "prompt-hook", findingId, disposition: "wrong", reason: "checked", config: store.config, ...opts });
+  } finally {
+    store.db.close();
+  }
+}
+
+/** The latest codex row of HEAD as a publishLabRow input, with `extra` appended to its items. */
+function republished(b, extra, at) {
+  const row = reviewRows(b).filter((r) => r.lab === "codex").at(-1);
+  return { cwd: row.cwd, head: row.head_sha, base: row.base_ref, branch: row.branch, lab: "codex", verdict: "findings", items: [...row.items.filter((i) => !i.dismissed).map((i) => ({ ...i })), ...extra], reason: null, at };
+}
+
+const NEW = { id: "fd-newone1", raisedAt: "2026-11-24T00:00:00.000Z", severity: "blocking", text: "z.txt:9 a new problem" };
+
+test("race: a review publishes a new blocking finding for the same lab and HEAD while dismiss holds its transaction; afterwards the new finding is open and the dismissed one resolved", async () => {
+  const { b, ids } = reviewed();
+  const row = republished(b, [NEW], nowIso(Date.now()));
+  // The child waits on the write lock that dismiss holds, then publishes.
+  const script = `import { DatabaseSync } from "node:sqlite"; import { publishLabRow } from ${JSON.stringify(REVIEW_LIB)};
+const db = new DatabaseSync(process.argv[1]); db.exec("PRAGMA busy_timeout = 10000");
+process.stdout.write(String(publishLabRow(db, process.argv[1], JSON.parse(process.argv[2])).id));`;
+  let child;
+  const done = new Promise((resolve) => {
+    const r = dismissNow(b, ids[0], {
+      afterRead() {
+        child = spawn(process.execPath, ["--input-type=module", "-e", script, b.dbPath, JSON.stringify(row)], { stdio: ["ignore", "pipe", "pipe"] });
+        let out = "";
+        child.stdout.on("data", (d) => (out += d));
+        child.on("close", (code) => resolve({ code, out }));
+        // Hold the transaction long enough for the child to be waiting on the lock.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 600);
+      },
+    });
+    assert.equal(r.code, 0, r.text);
+  });
+  const c = await done;
+  assert.equal(c.code, 0);
+  const last = reviewRows(b).at(-1);
+  assert.equal(String(last.id), c.out, "the review published after the dismissal");
+  assert.equal(last.items.find((i) => i.id === ids[0]).dismissed.disposition, "wrong");
+  assert.equal(last.items.find((i) => i.id === NEW.id).resolved, undefined);
+  assert.equal(last.verdict, "findings");
+  assert.equal(decision(push(b)), "deny");
+});
+
+test("race: a review that published before dismiss read is the row dismiss builds on", () => {
+  const { b, ids } = reviewed();
+  const db = openDb(b);
+  try {
+    publishLabRow(db, b.dbPath, republished(b, [NEW], nowIso(Date.now())));
+  } finally {
+    db.close();
+  }
+  const r = dismissNow(b, ids[0]);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /still open: fd-newone1 \(codex\)/);
+  const last = reviewRows(b).at(-1);
+  assert.deepEqual(last.items.map((i) => [i.id, Boolean(i.dismissed)]), [[ids[0], true], [NEW.id, false]]);
+});
+
+test("race: two dismissals of two findings on one lab row, started at once as two hook processes, both land", async () => {
+  const { b, ids } = reviewed(["a.txt:1 off by one", "b.txt:1 missing check"]);
+  const run = (id) =>
+    new Promise((resolve) => {
+      const p = spawn(process.execPath, [HOOK_PATH], { cwd: b.work, env: { ...b.env, LEDGER_BUSY_TIMEOUT_MS: "10000" } });
+      let out = "";
+      p.stdout.on("data", (d) => (out += d));
+      p.on("close", () => resolve(out));
+      p.stdin.end(JSON.stringify({ session_id: "s-race", cwd: b.work, hook_event_name: "UserPromptSubmit", prompt: `review dismiss ${id} wrong checked` }));
+    });
+  const outs = await Promise.all(ids.map(run));
+  for (const o of outs) assert.match(JSON.parse(o).systemMessage, /ok dismissed /);
+  assert.equal(dismissals(b).length, 2);
+  const last = reviewRows(b).at(-1);
+  assert.ok(last.items.every((i) => i.dismissed), JSON.stringify(last.items));
+  assert.equal(last.verdict, "pass");
+  assert.equal(decision(push(b)), "allow");
+});
+
+test("race: a review whose at is earlier than the dismissal's publishes after it; headState selects the review row, the new blocking finding is open, the dismissed one stays dismissed, and the push is denied", () => {
+  const { b, ids } = reviewed();
+  const t = Date.now();
+  const earlier = republished(b, [NEW], nowIso(t - 1000));
+  assert.equal(dismissNow(b, ids[0], { now: t }).code, 0);
+  const db = openDb(b);
+  try {
+    const stored = publishLabRow(db, b.dbPath, earlier);
+    const state = headState(db, b.work, git(b, "rev-parse", "HEAD"));
+    assert.equal(state.labRows[0].id, stored.id);
+    assert.equal(state.kind, "findings");
+  } finally {
+    db.close();
+  }
+  const last = reviewRows(b).at(-1);
+  assert.ok(last.items.find((i) => i.id === ids[0]).dismissed);
+  assert.equal(last.items.find((i) => i.id === NEW.id).dismissed, undefined);
+  assert.equal(decision(push(b)), "deny");
+});
+
+test("publishLabRow reconciles: addressed, carried and unavailable rows keep a dismissal on the same sha", () => {
+  const { b, ids } = reviewed(["a.txt:1 off by one", "b.txt:1 missing check"]);
+  assert.equal(dismissNow(b, ids[0]).code, 0);
+  const base = republished(b, [], nowIso(Date.now()));
+  const orig = reviewRows(b).filter((r) => r.lab === "codex")[0].items;
+  const db = openDb(b);
+  try {
+    // addressed's rejected row: the judge said no to both, and one was dismissed on this sha.
+    const rejected = publishLabRow(db, b.dbPath, { ...base, items: orig.map((i) => ({ ...i, judge: "no", note: "from round 1; the judge says it is not resolved" })), reason: "addressed rejected by the judge" });
+    assert.equal(rejected.verdict, "findings");
+    assert.deepEqual(rejected.items.filter((i) => !i.resolved).map((i) => i.id), [ids[1]]);
+    assert.ok(!rejected.findings.includes(`${ids[0]}: a.txt:1`));
+    assert.match(rejected.reason, /; 1 dismissed$/);
+    // A carried row and the same items on an unavailable lab's carry.
+    const carried = publishLabRow(db, b.dbPath, { ...base, items: orig.map((i) => ({ ...i, note: "from round 1" })), reason: "not run this time; its findings from round 1 stay open" });
+    assert.equal(carried.reason, "not run this time; its findings from round 1 stay open; 1 dismissed");
+  } finally {
+    db.close();
+  }
 });
