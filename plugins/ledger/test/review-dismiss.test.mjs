@@ -469,3 +469,38 @@ test("publishLabRow reconciles: addressed, carried and unavailable rows keep a d
     db.close();
   }
 });
+
+test("a dismissal that commits and then cannot read the gate state reports it applied, says the gate state could not be read, and the row exists (round 2)", () => {
+  const { b, ids } = reviewed();
+  const store = openStore({ env: b.env, cwd: b.work });
+  let committed = false;
+  // Every read after the COMMIT fails, as a database gone bad between the write and the read would.
+  const db = new Proxy(store.db, {
+    get(real, prop) {
+      if (prop === "exec")
+        return (sql) => {
+          const r = real.exec(sql);
+          if (sql === "COMMIT") committed = true;
+          return r;
+        };
+      if (prop === "prepare")
+        return (sql) => {
+          if (committed) throw new Error("disk I/O error (test)");
+          return real.prepare(sql);
+        };
+      const v = real[prop];
+      return typeof v === "function" ? v.bind(real) : v;
+    },
+  });
+  let r;
+  try {
+    r = dismiss({ db, dbPath: store.dbPath, via: "prompt-hook", findingId: ids[0], disposition: "wrong", reason: "checked by hand", config: store.config });
+  } finally {
+    store.db.close();
+  }
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.id, /^dm-/);
+  assert.match(r.text, new RegExp(`^dismissed ${ids[0]} \\(codex, wrong\\) on [0-9a-f]{8} in .*: checked by hand\\nthe dismissal is recorded; the review gate's state could not be read \\(disk I/O error \\(test\\)\\); run review status$`));
+  assert.deepEqual(dismissals(b).map((d) => [d.id, d.finding_id]), [[r.id, ids[0]]]);
+  assert.match(typed(b, `review dismiss ${ids[0]} wrong again`).message, /already dismissed/);
+});
