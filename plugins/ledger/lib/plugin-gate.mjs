@@ -70,7 +70,7 @@
 // scenarios; the other checks still run). The whole run is capped at 60 s: a check that does not start
 // before the cap records `fail` with `timeout`. The PreToolUse deny is given only while the
 // store can be read; any fault there is an allow with a notice (the review gate's rule). A
-// `review waive "<why>"` row for the head lifts this gate as it lifts the review gate.
+// `review waive "<why>"` row for the head (typed by the human as a prompt) lifts this gate as it lifts the review gate.
 
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -78,7 +78,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nowIso } from "./time.mjs";
-import { git, gitHead, defaultBase, headState, currentBranch, NotARepository } from "./review.mjs";
+import { git, gitHead, defaultBase, headState, currentBranch, NotARepository, waiveAsk } from "./review.mjs";
 import { transaction } from "./db.mjs";
 import { canonicalPath, coverageProblems, loadManifest, loadScenarios, readState, registeredEvents, retentionProblems } from "./plugin-evals.mjs";
 
@@ -950,7 +950,7 @@ export function gateCheck({ db, dbPath, cwd, env = process.env, plugins: only = 
     }
     if (git(top, ["status", "--porcelain", "--", plugin.prefix || "."]).trim()) lines.push(`  ${plugin.name.padEnd(16)} (uncommitted changes under ${plugin.prefix || "the repository"} were not checked; commit them and rerun)`);
   }
-  lines.push(failed ? `${failed} check(s) failed; fix and rerun \`ledger gate check\`, or \`ledger review waive "<why>"\` to push anyway` : "every check passed");
+  lines.push(failed ? `${failed} check(s) failed; fix and rerun \`ledger gate check\`, or ask the human to type ${waiveAsk(top, head)} as their whole prompt to push anyway` : "every check passed");
   return { code: failed ? 1 : 0, text: lines.join("\n") };
 }
 
@@ -985,10 +985,10 @@ export function pluginGateDecision(db, targets, { cli = "ledger" } = {}) {
     const base = defaultBase(db, t.top, t.sha, currentBranch(t.top));
     for (const plugin of changedPlugins(t.top, base, t.sha, all)) {
       const rows = checkRows(db, t.top, t.sha, plugin.name);
-      const wayOut = `run \`${cli} gate check\`, fix, or \`${cli} review waive "<why>"\``;
+      const wayOut = `run \`${cli} gate check\`, fix, or ask the human to type ${waiveAsk(t.top, t.sha)}`;
       if (!rows.length) return { deny: `ledger: plugin gate: ${plugin.name} has no check rows for ${short(t.sha)}; ${wayOut}` };
       const missing = CHECKS.filter((name) => !rows.some((r) => r.name === name));
-      if (missing.length) return { deny: `ledger: plugin gate: ${plugin.name}'s rows for ${short(t.sha)} have no ${missing.join(", ")} row (recorded by an older ledger); run \`${cli} gate check\` again, or \`${cli} review waive "<why>"\`` };
+      if (missing.length) return { deny: `ledger: plugin gate: ${plugin.name}'s rows for ${short(t.sha)} have no ${missing.join(", ")} row (recorded by an older ledger); run \`${cli} gate check\` again, or ask the human to type ${waiveAsk(t.top, t.sha)}` };
       const tree = treeSha(t.top, t.sha, plugin.prefix);
       const other = rows.find((r) => r.tree_sha !== tree);
       if (other) return { deny: `ledger: plugin gate: ${plugin.name}'s rows for ${short(t.sha)} certify tree ${short(other.tree_sha)}, not its tree ${short(tree)}; ${wayOut}` };

@@ -9,7 +9,7 @@
 //   findings        at least one blocking or should finding (the markdown is in `findings`)
 //   unavailable     the lab could not be run: no binary, non-zero exit, timeout, empty reply (`reason`)
 //   addressed       `review addressed "<why>"`: the human-approved override of an earlier commit's findings (lab `ledger`)
-//   waived          `review waive "<why>"`: the human let this commit through (lab `ledger`, `reason`)
+//   waived          `review waive "<why>"`, typed by the human as a prompt: they let this commit through (lab `ledger`, `reason`)
 //
 // The state of HEAD (headState), strictest first:
 //   waived       any waived row for HEAD                                → allow
@@ -1183,7 +1183,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
   if (round > max && !forceRound) {
     return {
       code: 1,
-      text: `stopped: this would be review round ${round} for this branch, and review.maxRounds is ${max}. Ask the human: waive with their reason (\`${cli} review waive "<why>"\`), or continue with \`${cli} review --force-round\`.`,
+      text: `stopped: this would be review round ${round} for this branch, and review.maxRounds is ${max}. Ask the human: they can type ${waiveAsk(top, head)} as their whole prompt in a Claude Code session, or you continue with \`${cli} review --force-round\`.`,
     };
   }
   // The newest pattern-check receipt in the repository, when one exists, goes in front of the
@@ -1291,7 +1291,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
     out.push(
       round < max
         ? `next: fix the blocking and should findings, commit, and run \`${cli} review\` again (round ${round + 1} of ${max}); a finding that is wrong, intentional or does not matter: ask the human to type its review dismiss line (review status lists them).`
-        : `round ${round} of ${max} reached: ask the human whether to waive (\`${cli} review waive "<why>"\`) or continue with \`${cli} review --force-round\`.`,
+        : `round ${round} of ${max} reached: ask the human: they can type ${waiveAsk(top, head)} as their whole prompt in a Claude Code session, or you continue with \`${cli} review --force-round\`.`,
     );
   }
   return { code: 0, text: out.join("\n") };
@@ -1437,19 +1437,37 @@ export function dismiss({ db, dbPath, via, by = null, sessionId = null, promptId
   return { code: 0, id: result.dmId, text: `dismissed ${id} (${found.lab}, ${disposition}) on ${short(head)} in ${top}: ${why}\n${gateAfter(db, top, head, mode, cli)}` };
 }
 
-/** `review waive "<why>"`, typed by the human: a waived row for HEAD. */
-export function waive({ db, dbPath, cwd, reason, via, sessionId = null, now = Date.now() }) {
-  if (via !== "prompt-hook") return { code: 1, text: `refused ${humanOnlyText("waive", {}, cwd)}` };
+/**
+ * What an agent-facing text says when the human may want to push anyway: the waive line for them
+ * to type, bound to the repository and commit (0.4.12). `top` null (a pull request's head) leaves
+ * `--in` out, so the waive applies to the folder of the session it is typed in.
+ */
+export function waiveAsk(top, head) {
+  return `\`review waive${top ? ` --in ${word(top)}` : ""} --head ${head} "<their reason>"\``;
+}
+
+/**
+ * `review waive [--in <folder>] [--head <sha>] <reason…>`, typed by the human: a waived row for
+ * HEAD of the folder (`--in`, else the session's cwd). `--head` binds the waive to the commit the
+ * human was shown, and is refused once that repository has moved on.
+ */
+export function waive({ db, dbPath, cwd, reason, via, in: folder = null, head: wantHead = null, sessionId = null, now = Date.now() }) {
+  if (via !== "prompt-hook") return { code: 1, text: `refused ${humanOnlyText("waive", { in: folder }, cwd)}` };
   const why = String(reason ?? "").trim();
-  if (!why) return { code: 1, text: 'refused review waive needs the reason: review waive "<why>"' };
+  const problem = reasonProblem("waive", why);
+  if (problem) return { code: 1, text: `refused ${problem}: review waive [--in <folder>] [--head <sha>] "<why>"` };
   let top, head;
   try {
-    ({ top, head } = gitHead(cwd));
+    ({ top, head } = gitHead(folder ? resolvePath(cwd, folder) : cwd, { timeoutMs: HOOK_GIT_TIMEOUT_MS }));
   } catch (err) {
     return { code: 1, text: `refused ${err.message}` };
   }
-  insertRow(db, dbPath, { sessionId, cwd: top, head, branch: currentBranch(top), lab: META_LAB, verdict: "waived", reason: why, at: nowIso(now) });
-  return { code: 0, text: `waived the review gate for ${short(head)}: ${why}` };
+  if (wantHead && !(/^[0-9a-f]{7,40}$/i.test(wantHead) && head.startsWith(wantHead.toLowerCase()))) {
+    return { code: 1, text: `refused review waive --head ${wantHead}: ${top} is at ${head} now; nothing recorded. To waive that commit, type: review waive --in ${word(top)} --head ${head} "<your reason>"` };
+  }
+  const branch = currentBranch(top);
+  const id = transaction(db, () => insertRowTx(db, { sessionId, cwd: top, head, branch, lab: META_LAB, verdict: "waived", reason: why, at: nowIso(now) }), dbPath);
+  return { code: 0, id: String(id), text: `waived the review gate for ${short(head)} in ${top}: ${why}` };
 }
 
 /**
@@ -1472,7 +1490,7 @@ export async function addressed({ db, dbPath, cwd, reason, config = {}, env = pr
     return { code: 1, text: `refused ${err.message}` };
   }
   if (headState(db, top, head).findings.length) {
-    return { code: 1, text: `refused ${short(head)} has review findings of its own; fix them, commit, and run \`review\` again, or waive with the human's reason` };
+    return { code: 1, text: `refused ${short(head)} has review findings of its own; fix them, commit, and run \`review\` again, or ask the human to dismiss or waive them` };
   }
   const base = defaultBase(db, top, head, branch);
   const owed = [...outstanding(db, top, branchRounds(db, top, base, head), head).values()].filter((e) => e.row.head_sha !== head);
@@ -1559,13 +1577,13 @@ export function gateDecision(state, mode, cli = "ledger") {
   if (state.kind === "waived") return {};
   if (state.kind === "addressed") return unverifiedText ? { notice: `ledger: review addressed for ${sha}; ${unverifiedText}` } : {};
   if (state.kind === "findings") {
-    let msg = `ledger: the cross-lab review found problems in ${sha}. Fix the blocking and should findings, commit, and run \`${cli} review\` again; to override a finding that does not apply, \`${cli} review addressed "<why>"\` after committing; if the human wants to push anyway, record their words with \`${cli} review waive "<their reason>"\`.\n\n${grouped(state.findings)}`;
+    let msg = `ledger: the cross-lab review found problems in ${sha}. Fix the blocking and should findings, commit, and run \`${cli} review\` again; to override a finding that does not apply, \`${cli} review addressed "<why>"\` after committing; if the human wants to push anyway, ask them to type as their whole prompt in a Claude Code session: ${waiveAsk(state.top, state.head)}; you cannot run it.\n\n${grouped(state.findings)}`;
     const lines = dismissLines(state.findings);
     if (lines.length) msg += `\n\nto dismiss a finding that is wrong, intentional or does not matter, ask the human to type one of these as their whole prompt, with their own reason:\n${lines.join("\n")}`;
     return mode === "gate" ? { deny: msg } : { notice: msg };
   }
   if (state.kind === "none") {
-    const msg = `ledger: no cross-lab review for ${sha}; run \`${cli} review\` before pushing (if the human says they are prototyping or need the push anyway, run \`${cli} review waive "<their reason>"\`).`;
+    const msg = `ledger: no cross-lab review for ${sha}; run \`${cli} review\` before pushing (if the human says they are prototyping or need the push anyway, ask them to type as their whole prompt in a Claude Code session: ${waiveAsk(state.top, state.head)}; you cannot run it).`;
     return mode === "gate" ? { deny: msg } : { notice: msg };
   }
   if (state.kind === "unavailable") return { notice: `ledger: review gate open for ${sha}: every lab was unavailable (${unavailableText(state.unavailable)})` };

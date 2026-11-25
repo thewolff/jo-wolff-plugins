@@ -551,7 +551,7 @@ test("gate check: records one row per changed plugin and check for HEAD, exits 1
   assert.match(r.out, /good\s+says\s+pass/);
   assert.match(r.out, /good\s+evals\s+pass\s+2 scenario\(s\) cover 1 event\(s\); canary #\d+ at \S+: live pass/);
   assert.match(r.out, /good\s+retention\s+pass\s+2 state path\(s\) declared/);
-  assert.match(r.out, /fix and rerun `ledger gate check`, or `ledger review waive "<why>"` to push anyway/);
+  assert.match(r.out, /fix and rerun `ledger gate check`, or ask the human to type `review waive --in \S+ --head [0-9a-f]{40} "<their reason>"` as their whole prompt to push anyway/);
   const rows = gateRows(b);
   assert.deepEqual(
     rows.map((x) => [x.plugin, x.name, x.status]),
@@ -614,7 +614,7 @@ test("PreToolUse: a push from a repository of plugins is denied without check ro
   passReview(b);
   const r1 = push(b);
   assert.equal(decision(r1), "deny");
-  assert.match(reason(r1), /^ledger: plugin gate: good has no check rows for [0-9a-f]{8}; run `[^`]*ledger\.mjs gate check`, fix, or `[^`]*ledger\.mjs review waive "<why>"`$/);
+  assert.match(reason(r1), /^ledger: plugin gate: good has no check rows for [0-9a-f]{8}; run `[^`]*ledger\.mjs gate check`, fix, or ask the human to type `review waive --in \S+ --head [0-9a-f]{40} "<their reason>"`$/);
   // Break good's text and commit it, record the failure: the deny names the check and its detail.
   write(join(b.work, "plugins", "good"), "skills/good/SKILL.md", "# Good\n");
   commitAll(b, "break good");

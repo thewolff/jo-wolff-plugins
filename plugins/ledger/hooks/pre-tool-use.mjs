@@ -31,13 +31,13 @@
 // named for another reason (`--all`, a pattern refspec, a remote that does not answer), the call
 // is allowed with a notice. Only a deny writes a `reviewGate` bounce row; any allowed gated command
 // marks the session's open `reviewGate` rows satisfied. A deny is only given while the store can
-// take the write that lifts it (`review`, `waive`); otherwise the call is allowed with a notice.
+// take the write that lifts it (`review`, or a dismiss or waive the human types); otherwise the call is allowed with a notice.
 // Any fault while deciding (git missing or past its deadline, a query that throws) allows the
 // call with one systemMessage line; a cwd outside any repository is not gated.
 //
 // Plugin gate (lib/plugin-gate.mjs; same mode switch): for a published commit in a repository of
 // plugins, every plugin changed since the base needs cc_gate_checks rows for that commit with no
-// `fail`; none, or a failure, is a deny naming `gate check` and `review waive` as the ways out;
+// `fail`; none, or a failure, is a deny naming `gate check`, and the `review waive` line the human types, as the ways out;
 // a waived commit passes. The commits are resolved once for both gates. Only a deny writes a
 // `pluginGate` bounce row; an allowed push marks the session's open ones satisfied.
 //
@@ -135,7 +135,8 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
     const review = reviewGate(push, { store, cwd, env });
     const plugin = pluginGate(push, { store, env });
     if (verdict || review?.deny || plugin?.deny) {
-      // A deny tells the agent to run `ask`, `note`, `review` or `waive`, which write. When the
+      // A deny tells the agent to run `ask`, `note` or `review`, or to ask the human to type a
+      // dismiss or waive, each of which writes. When the
       // store cannot take a write (read-only file, a lock that outlasts busy_timeout) that advice
       // is a dead end, so the gate passes instead; withStore turns the StoreError into the allow
       // shape with one systemMessage.

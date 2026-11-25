@@ -1,14 +1,20 @@
 ---
 name: review
 description: 'Run the cross-lab review of this branch (ledger review): every configured lab reviews git diff from the base to HEAD and the verdicts are recorded for HEAD.'
-argument-hint: "[--base <ref>] [--labs a,b] | status | addressed | waive <why>"
+argument-hint: "[--base <ref>] [--labs a,b] | status | addressed <why>"
 allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/ledger.mjs" review:*)
 ---
 
 Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/ledger.mjs" review $ARGUMENTS` from this session's working
 directory. With no arguments it reviews the branch; `status` shows the rows for HEAD; `addressed`
-records that HEAD fixes an earlier commit's findings; `waive "<why>"` lets HEAD through, with the
-human's own words as the reason.
+records that HEAD fixes an earlier commit's findings.
+
+`review dismiss` (one finding is wrong, intentional or does not matter) and `review waive` (let
+HEAD through) are the human's. They apply only when the human types the line as their whole
+prompt in a Claude Code session; from the shell they are refused and nothing is recorded. Give
+the human the paste-ready line from the push denial or from `review status`, with the reason
+left as `"<their reason>"` for them to fill in. Never compose the reason, and never run either
+line yourself.
 
 Report to the person, briefly: each lab's verdict as printed (`pass`, `findings`, `unavailable`
 with its reason), then the findings themselves, grouped by lab, as the output gives them. If the
@@ -19,8 +25,13 @@ output starts with `refused`, quote the reason. Do not fix anything unless the p
 - Every lab prints `unavailable: <reason>` (binary missing, no credential, a timeout): the rows
   are recorded as unavailable and the push gate stays shut. Tell the person the reasons as
   printed; `node "${CLAUDE_PLUGIN_ROOT}/scripts/ledger.mjs" doctor` names the binary each lab
-  needs. The person decides between fixing the lab and `review waive "<why>"`; never waive on
-  your own.
+  needs. The person decides between fixing the lab and typing the `review waive` line; never
+  waive on your own.
+- `refused review dismiss is the human's` or `refused review waive is the human's`: an agent
+  ran the line. Relay the line in the refusal for the human to type; nothing was recorded.
+- The human typed the line and nothing happened: `hooks.userPromptCommands` is off in the user
+  config, or the session is not Claude Code (an OMP session does not run ledger's prompt hook).
+  Say which; with the switch off no dismiss or waive is possible.
 - `refused … not in a git repository` or `… has no commit yet`: there is nothing to review; say so.
 - `ledger: database … ` on stderr: the review ran but its rows were not written, so the gate
   will not see it. Quote the line; `ledger doctor` says what is wrong with the database.

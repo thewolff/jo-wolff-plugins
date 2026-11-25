@@ -75,12 +75,16 @@ the human for permission. `… help` prints the whole grammar.
    PreToolUse hook denies the push while HEAD has no review or has blocking or should
    findings (nits only are a pass, with a notice). On findings: fix them, commit, and run
    `… review` again on the new commit; the output names the round. Repeat until it passes.
-   When the output says the round cap is reached, stop and ask the human: waive with their
-   reason, or continue with `--force-round`. A judge model checks every finding you claim is
+   When the output says the round cap is reached, stop and ask the human: they can type the
+   `review waive` line from the output as their whole prompt, or you continue with
+   `--force-round`. A judge model checks every finding you claim is
    resolved; to override a finding that does not apply, commit, then run
-   `… review addressed "<why>"`. When the human says they are prototyping or need the push
-   anyway, run `… review waive "<their words>"` with their words as the reason. Never ask them
-   to edit the config to get past the gate.
+   `… review addressed "<why>"`. When a finding is wrong, intentional or does not matter, give
+   the human its `review dismiss` line from `… review status` to type. When the human says they
+   are prototyping or need the push anyway, give them the line to type:
+   `review waive --in <top> --head <sha> "<their reason>"`. Both apply only when the human types
+   them as their whole prompt; you cannot run them. Never ask them to edit the config to get
+   past the gate.
 
 There is no "open" or "close": the folder you are in is the unit of work, and questions and
 notes bind to it. A question is in scope in its own folder, in every folder below it, and in
