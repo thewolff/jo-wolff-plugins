@@ -1494,7 +1494,15 @@ export function dismiss({ db, dbPath, via, by = null, sessionId = null, promptId
   );
   if (result.refused) return { code: 1, text: `refused ${result.refused}` };
   const mode = config.review?.mode ?? "gate";
-  return { code: 0, id: result.dmId, text: `dismissed ${id} (${found.lab}, ${disposition}) on ${short(head)} in ${top}: ${why}\n${gateAfter(db, top, head, mode, cli)}` };
+  // The dismissal is committed: a failed read of the gate's state after it does not undo it, so it
+  // is reported as applied, with the read failure named, never as refused.
+  let after;
+  try {
+    after = gateAfter(db, top, head, mode, cli);
+  } catch (err) {
+    after = `the dismissal is recorded; the review gate's state could not be read (${err?.message ?? err}); run review status`;
+  }
+  return { code: 0, id: result.dmId, text: `dismissed ${id} (${found.lab}, ${disposition}) on ${short(head)} in ${top}: ${why}\n${after}` };
 }
 
 /**
