@@ -118,7 +118,16 @@ function resultText(content) {
     .join("\n");
 }
 
-const INTERRUPTED = /^(?:\[Request interrupted by user|Interrupted by user|The user doesn't want to (?:proceed|take)|[^\n]{0,60}\b(?:interrupted|cancell?ed)\b)/i;
+// The harness's own marker text at the very start of a tool_result: an interrupt, a rejection, or a
+// call cancelled because a parallel sibling failed. Only these exact openings count; a command's own
+// output that merely mentions "interrupted" or "cancelled" (say "0 tests cancelled") is output.
+const INTERRUPTED = /^(?:\[Request interrupted by user|Interrupted by user|The user doesn't want to (?:proceed|take)|<tool_use_error>Cancell?ed\b)/i;
+
+/** toolUseResult.interrupted when it is a boolean (the structured flag decides); else the harness marker. */
+function interruptedOf(contentText, tur) {
+  if (tur && typeof tur === "object" && typeof tur.interrupted === "boolean") return tur.interrupted;
+  return INTERRUPTED.test(contentText.trimStart());
+}
 
 /**
  * Every tool call in `entries`, in order of its tool_use, paired with its result:
@@ -130,8 +139,8 @@ const INTERRUPTED = /^(?:\[Request interrupted by user|Interrupted by user|The u
  *         WebFetch, toolUseResult.result when it is a string, else the content text.
  *   exitCode: see exitCodeOf: structured metadata, else the start of an error result only; else
  *         null. Claude Code records no code for a Bash call that succeeded.
- *   interrupted: toolUseResult.interrupted === true, or content that says the user interrupted,
- *         rejected or cancelled the call.
+ *   interrupted: toolUseResult.interrupted when it is a boolean; else true only when the content
+ *         opens with the harness's interrupt, rejection or cancellation marker (see INTERRUPTED).
  *   finalUrl: for WebFetch, the redirect target the result names, else toolUseResult.url, else null.
  *         Only inside the "REDIRECT DETECTED" envelope, and only with a 3xx status when one is present.
  *         Claude Code 2.1.318 writes the target as "Redirect URL (from the server's Location header …): <url>"
@@ -201,7 +210,7 @@ function resultOf(call, part, tur) {
     else if (tur && typeof tur === "object" && typeof tur.url === "string") finalUrl = tur.url;
   }
   const exitCode = exitCodeOf(isError, contentText, tur);
-  const interrupted = (tur && typeof tur === "object" && tur.interrupted === true) || INTERRUPTED.test(contentText.trimStart());
+  const interrupted = interruptedOf(contentText, tur);
   return { text, isError, interrupted, exitCode, finalUrl, httpStatus, raw: part };
 }
 
