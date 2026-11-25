@@ -120,7 +120,7 @@ test("review (b): findings → a findings row; the gate denies with them; Sessio
   assert.equal(reviews(b)[0].verdict, "findings");
   const p = push(b);
   assert.equal(decision(p), "deny");
-  assert.match(p.json.hookSpecificOutput.permissionDecisionReason, /codex:\n1\. a\.txt:1 off by one/);
+  assert.match(p.json.hookSpecificOutput.permissionDecisionReason, /codex:\n1\. \[should\] (fd-[a-z0-9]+: )?a\.txt:1 off by one/);
   assert.match(p.json.hookSpecificOutput.permissionDecisionReason, /review waive/);
   const ctx = hook(b, "session-start", { session_id: SID, cwd: b.work, source: "startup" }).json.hookSpecificOutput.additionalContext;
   assert.match(ctx, /ledger: cross-lab review found 2 finding\(s\) on [0-9a-f]{8}; run `.*review status`/);
@@ -218,7 +218,7 @@ test("review (j): two labs, one pass one findings → deny naming the findings l
   review(b, [], env);
   assert.deepEqual(reviews(b).map((x) => [x.lab, x.verdict]), [["codex", "pass"], ["kimi", "findings"]]);
   const reason = push(b).json.hookSpecificOutput.permissionDecisionReason;
-  assert.match(reason, /kimi:\n1\. kimi saw a race/);
+  assert.match(reason, /kimi:\n1\. \[should\] (fd-[a-z0-9]+: )?kimi saw a race/);
   assert.ok(!reason.includes("codex:"), reason);
   // kimi takes the prompt as its -p argument, with stream-json output and the tool-free agent file.
   const args = readFileSync(`${env.LEDGER_REVIEW_BIN_KIMI}.args`, "utf8");
@@ -276,7 +276,7 @@ test("review: status lists the rows for HEAD and the gate's state", () => {
   const out = review(b, ["status"]).out;
   assert.match(out, /: findings; review\.mode gate would deny a push/);
   assert.match(out, /codex\s+pass/);
-  assert.match(out, /kimi\s+findings\n {2}1\. x/);
+  assert.match(out, /kimi\s+findings\n {2}1\. \[should\] (fd-[a-z0-9]+: )?x/);
 });
 
 test("review: doctor warns per configured lab whose binary is missing, and not when mode is off", () => {

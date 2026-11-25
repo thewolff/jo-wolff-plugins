@@ -86,6 +86,17 @@ export function hook(box, name, payload, { env = {}, cwd = box.work } = {}) {
   return { code: r.status, out: r.stdout, err: r.stderr, json };
 }
 
+/**
+ * Type `line` as the human's whole prompt: the user-prompt hook runs as a spawned process with a
+ * UserPromptSubmit input, so the line is applied with `via: "prompt-hook"` (0.4.12: the only
+ * channel `review waive` and `review dismiss` accept). Returns hook()'s result plus `message`,
+ * the systemMessage the human sees.
+ */
+export function typed(box, line, { sessionId = "s-typed", cwd = box.work, env = {} } = {}) {
+  const r = hook(box, "user-prompt", { session_id: sessionId, cwd, hook_event_name: "UserPromptSubmit", prompt: line }, { env, cwd });
+  return { ...r, message: r.json?.systemMessage ?? "" };
+}
+
 /** Apply lines in-process against the sandbox store and return the batch; the store is closed after. */
 export function apply(box, lines, { cwd = box.work, via = "cli", by = null, sessionId = null, now = Date.now(), onlyPromptApplicable = false } = {}) {
   const store = openStore({ env: box.env, now, cwd });

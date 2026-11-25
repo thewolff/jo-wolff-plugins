@@ -4,7 +4,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, chmodSy
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { open, migrate, transaction, storeVersion, foreignTables, StoreError, SCHEMA_VERSION, OWN_TABLES } from "../lib/db.mjs";
+import { open, migrate, transaction, storeVersion, foreignTables, StoreError, SCHEMA_VERSION, OWN_TABLES, MIGRATIONS } from "../lib/db.mjs";
 import { sandbox } from "./helpers.mjs";
 
 const box = sandbox();
@@ -15,7 +15,7 @@ test("opening a path in a missing directory creates it; schema_version lives in 
   const r = open(p);
   assert.ok(existsSync(p));
   assert.equal(storeVersion(r.db), SCHEMA_VERSION);
-  assert.equal(SCHEMA_VERSION, 11);
+  assert.equal(SCHEMA_VERSION, 12);
   assert.equal(r.db.prepare("PRAGMA user_version").get().user_version, 0);
   assert.equal(r.shared, false);
   assert.deepEqual(r.notices, []);
@@ -174,4 +174,21 @@ test("schema invariants: options need two entries; an answer needs its question;
   d.exec(`INSERT INTO cc_questions (id,cwd,name,body,options,default_opt,asked_by,asked_at) VALUES ('q-a','/x','n','b','["a","b"]','a','agent','${t}')`);
   assert.throws(() => d.exec(`INSERT INTO cc_answers (id,question_id,word,answered_by,answered_at,via) VALUES ('an-a','q-none','a','me','${t}','cli')`), /FOREIGN KEY/);
   d.close();
+});
+
+test("migration 12 is idempotent on a store that already has cc_dismissals; the CHECK refuses a via that is not prompt-hook", () => {
+  const b = sandbox();
+  const { db } = open(join(b.root, "m12.db"));
+  const schema = () => db.prepare("SELECT name, sql FROM sqlite_master WHERE tbl_name = 'cc_dismissals' ORDER BY name").all().map((r) => ({ ...r }));
+  const before = schema();
+  assert.equal(before.length, 5, JSON.stringify(before)); // the table, three indexes, the primary key's autoindex
+  MIGRATIONS[11](db);
+  MIGRATIONS[11](db);
+  assert.deepEqual(schema(), before);
+  const ins = (via) =>
+    db.prepare("INSERT INTO cc_dismissals (id, finding_id, cwd, head_sha, lab, text, disposition, reason, by, via, at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(`dm-${via}`, "fd-1", "/r", "abc", "codex", "t", "wrong", "r", "jo", via, "2026-11-24T00:00:00.000Z");
+  assert.throws(() => ins("cli"), /CHECK constraint failed/);
+  ins("prompt-hook");
+  assert.throws(() => db.prepare("INSERT INTO cc_dismissals (id, finding_id, cwd, head_sha, lab, text, disposition, reason, by, via, at) VALUES ('dm-2','fd-1','/r','abc','codex','t','wrong','r','jo','prompt-hook','x')").run(), /UNIQUE constraint failed/);
+  db.close();
 });

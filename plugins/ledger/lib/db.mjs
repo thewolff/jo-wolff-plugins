@@ -93,7 +93,7 @@ export function storeWord(kind) {
 }
 
 /** The tables this plugin owns, in creation order. Anything else in the file is foreign. */
-export const OWN_TABLES = Object.freeze(["cc_meta", "cc_questions", "cc_answers", "cc_notes", "cc_sessions", "cc_bounces", "cc_reviews", "cc_judge_cache", "cc_canary_runs", "cc_gate_checks", "cc_canary_prunes", "cc_owed", "cc_owed_moves"]);
+export const OWN_TABLES = Object.freeze(["cc_meta", "cc_questions", "cc_answers", "cc_notes", "cc_sessions", "cc_bounces", "cc_reviews", "cc_judge_cache", "cc_canary_runs", "cc_gate_checks", "cc_canary_prunes", "cc_owed", "cc_owed_moves", "cc_dismissals"]);
 
 export const MIGRATIONS = [
   // 1: the initial schema. Rows bind to a folder (`cwd`), never to a "workload" row: the folder
@@ -460,6 +460,36 @@ export const MIGRATIONS = [
     addColumnIfMissing(db, "cc_owed", "checked_at", "TEXT");
     addColumnIfMissing(db, "cc_sessions", "last_advise_block_prompt", "TEXT");
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS cc_owed_open_branch ON cc_owed (git_dir, branch) WHERE branch IS NOT NULL AND state IN ('owed','started','deferred')");
+  },
+  // 12 (0.4.12): per-finding dismissals. One row per `review dismiss <fd-id> …` the human typed as
+  // a prompt (via is always prompt-hook; the CHECK backs the check in lib/review.mjs dismiss()).
+  // finding_id is the `fd-` id inside cc_reviews.findings_json; review_id the row it was read
+  // from. A finding is dismissed at most once per commit. Every statement is IF NOT EXISTS, so a
+  // store that already has the table (another line's numbering) passes through unchanged.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS cc_dismissals (
+        id          TEXT PRIMARY KEY,
+        finding_id  TEXT NOT NULL,
+        review_id   INTEGER,
+        cwd         TEXT NOT NULL,
+        head_sha    TEXT NOT NULL,
+        branch      TEXT,
+        lab         TEXT NOT NULL,
+        severity    TEXT,
+        text        TEXT NOT NULL,
+        disposition TEXT NOT NULL CHECK (disposition IN ('wrong','intentional','doesnt-matter')),
+        reason      TEXT NOT NULL,
+        by          TEXT NOT NULL,
+        via         TEXT NOT NULL CHECK (via = 'prompt-hook'),
+        session_id  TEXT,
+        prompt_id   TEXT,
+        at          TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS cc_dismissals_finding ON cc_dismissals (finding_id, head_sha);
+      CREATE INDEX IF NOT EXISTS cc_dismissals_cwd_lab ON cc_dismissals (cwd, lab);
+      CREATE INDEX IF NOT EXISTS cc_dismissals_at ON cc_dismissals (at);
+    `);
   },
 ];
 
