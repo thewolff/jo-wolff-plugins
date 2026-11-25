@@ -573,11 +573,17 @@ function ranCommand(cmd, haystack) {
   return new RegExp(`(?:^|[\\s;&|()])${word}(?=$|[\\s;&|()])`).test(String(haystack ?? ""));
 }
 
-/** The http(s) URLs in a statement, trailing punctuation, quotes, brackets and backticks stripped. Deduplicated. */
+/**
+ * The http(s) URLs in a statement, trailing punctuation, quotes, brackets and backticks stripped.
+ * A trailing `)` is stripped only while the URL has more `)` than `(`, so a balanced one
+ * (`.../Function_(mathematics)`) stays. Deduplicated.
+ */
 export function urlsNamed(text) {
   const out = [];
+  const count = (s, ch) => s.split(ch).length - 1;
   for (const m of String(text ?? "").matchAll(/\bhttps?:\/\/[^\s<>"'`]+/g)) {
-    const u = m[0].replace(/[.,;:!?)\]}>'"`*_]+$/, "");
+    let u = m[0].replace(/[.,;:!?\]}>'"`*_]+$/, "");
+    while (u.endsWith(")") && count(u, ")") > count(u, "(")) u = u.slice(0, -1).replace(/[.,;:!?\]}>'"`*_]+$/, "");
     if (u.length > "https://".length && !out.includes(u)) out.push(u);
   }
   return out;
