@@ -52,6 +52,7 @@ import { fileURLToPath } from "node:url";
 import { transaction } from "./db.mjs";
 import { logError } from "./failopen.mjs";
 import { nowIso } from "./time.mjs";
+import { newId } from "./ids.mjs";
 import { parseItems, receiptSection, severityCounts, which } from "./review/common.mjs";
 import { ask as askJudge, focusPattern, judgeCommand, passageFor, quotations, RECEIPT_CHANGED_QUESTION } from "./ledger-judge.mjs";
 import { findApproval } from "./review/claudex.mjs";
@@ -392,16 +393,134 @@ const words = (t) => new Set(String(t).toLowerCase().match(/[a-z0-9]+/g) ?? []);
  * downgrade goes to the judge like a removal.
  */
 export function stillListed(item, items) {
-  const norm = (t) => String(t).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  const file = namedFiles(item.text)[0] ?? null;
-  const w = words(item.text);
-  return openSerious(items).some((other) => {
-    if (norm(other.text) === norm(item.text)) return true;
-    if (!file || namedFiles(other.text)[0] !== file) return false;
-    const o = words(other.text);
-    const shared = [...w].filter((x) => o.has(x)).length;
-    return shared / Math.max(1, new Set([...w, ...o]).size) >= 0.5;
-  });
+  return openSerious(items).some((other) => sameFinding(item, other));
+}
+
+const normText = (t) => String(t).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/**
+ * How strongly `a` and `b` are the same finding: 2 for equal normalized text, else the share of
+ * words they have in common when they name the same first file and share at least half, else 0.
+ * Severity, `resolved` and `dismissed` play no part.
+ */
+function matchScore(a, b) {
+  if (normText(a.text) === normText(b.text)) return 2;
+  const file = namedFiles(a.text)[0] ?? null;
+  if (!file || namedFiles(b.text)[0] !== file) return 0;
+  const w = words(a.text);
+  const o = words(b.text);
+  const shared = [...w].filter((x) => o.has(x)).length;
+  const ratio = shared / Math.max(1, new Set([...w, ...o]).size);
+  return ratio >= 0.5 ? ratio : 0;
+}
+
+/** Whether two items are the same finding (stillListed's test without its serious-only filter, 0.4.12). */
+export function sameFinding(a, b) {
+  return matchScore(a, b) > 0;
+}
+
+/** One-to-one matches between `as` and `bs`, strongest first: [[i, j], …]. `ok(a, b)` can veto a pair. */
+function pairUp(as, bs, ok = () => true) {
+  const pairs = [];
+  as.forEach((a, i) =>
+    bs.forEach((b, j) => {
+      if (!ok(a, b)) return;
+      const score = matchScore(a, b);
+      if (score) pairs.push({ i, j, score });
+    }),
+  );
+  pairs.sort((x, y) => y.score - x.score || x.i - y.i || x.j - y.j);
+  const usedA = new Set();
+  const usedB = new Set();
+  const out = [];
+  for (const { i, j } of pairs) {
+    if (usedA.has(i) || usedB.has(j)) continue;
+    usedA.add(i);
+    usedB.add(j);
+    out.push([i, j]);
+  }
+  return out;
+}
+
+/**
+ * Every item that has an id in `lab`'s rows of the branch's rounds, newest row first by id, one
+ * copy per id (the newest), whatever its state: open, resolved by the judge, dismissed, or a nit.
+ */
+export function identityHistory(rounds, lab) {
+  const rows = rounds
+    .flatMap((r) => r.rows)
+    .filter((r) => r.lab === lab)
+    .sort((x, y) => y.id - x.id);
+  const seen = new Map();
+  for (const row of rows) for (const it of rowItems(row)) if (it.id && !seen.has(it.id)) seen.set(it.id, it);
+  return [...seen.values()];
+}
+
+/** The earliest `at` of `lab`'s rows on `sha` in the rounds; null when there is none. */
+function firstAt(rounds, lab, sha) {
+  const ats = rounds
+    .flatMap((r) => r.rows)
+    .filter((r) => r.lab === lab && r.head_sha === sha)
+    .map((r) => r.at)
+    .sort();
+  return ats[0] ?? null;
+}
+
+/** A new id and raisedAt for an item that has none: a legacy item's raisedAt is its first round's. */
+function freshId(item, { rounds, lab, head, at }) {
+  const since = item.since && item.since !== head ? firstAt(rounds, lab, item.since) : null;
+  return { ...item, id: newId("fd"), raisedAt: since ?? at };
+}
+
+/**
+ * Step 1 of finding identity: each open serious reply item that repeats an owed item (one to
+ * one, strongest match first) takes its id and raisedAt; a legacy owed item gets its id here.
+ */
+function matchOwed(items, before, ctx) {
+  if (!before) return items;
+  const out = [...items];
+  const serious = (a) => !a.resolved && (a.severity === "blocking" || a.severity === "should");
+  for (const [i, j] of pairUp(out, before.items, (a) => serious(a))) {
+    const o = before.items[j].id ? before.items[j] : freshId(before.items[j], ctx);
+    out[i] = { ...out[i], id: o.id, raisedAt: o.raisedAt };
+  }
+  return out;
+}
+
+/**
+ * Steps 2 and 3 of finding identity, after the judge step (0.4.12): a reply item still without an
+ * id takes, one to one, the id and raisedAt of the same finding in `history` or among the judged
+ * items the judge resolved, whose ids are not already claimed; a judged item the judge resolved
+ * whose id is claimed this way folds into the claiming item as `judgedFrom` and leaves the list.
+ * A judged item the judge did not resolve keeps its id, and no reply item may take it. Anything
+ * still without an id gets a new one. Returns the row's final items: the reply items, then the
+ * judged items that remain.
+ */
+export function assignIds(items, { rounds, lab, head, at, history = [], judged = [] }) {
+  const ctx = { rounds, lab, head, at };
+  const reply = [...items];
+  let rest = [...judged];
+  const claimed = new Set([...reply.map((i) => i.id), ...rest.filter((j) => !j.resolved).map((j) => j.id)].filter(Boolean));
+  const pool = [];
+  const inPool = new Set();
+  for (const c of [...rest.filter((j) => j.resolved && j.id), ...history]) {
+    if (claimed.has(c.id) || inPool.has(c.id)) continue;
+    inPool.add(c.id);
+    pool.push(c);
+  }
+  const open = reply.map((it, i) => (it.id ? -1 : i)).filter((i) => i >= 0);
+  const pairs = pairUp(
+    open.map((i) => reply[i]),
+    pool,
+  );
+  for (const [k, j] of pairs) {
+    const i = open[k];
+    const match = pool[j];
+    const folded = rest.find((x) => x.resolved && x.id === match.id);
+    reply[i] = { ...reply[i], id: match.id, raisedAt: match.raisedAt ?? at, ...(folded ? { judgedFrom: { severity: folded.severity, judge: folded.judge } } : {}) };
+    if (folded) rest = rest.filter((x) => x !== folded);
+  }
+  return [...reply, ...rest].map((it) => (it.id ? it : freshId(it, ctx)));
 }
 
 /**
@@ -872,7 +991,7 @@ function verdictOf(items) {
   return open.length ? "pass-with-nits" : "pass";
 }
 
-const itemLine = (i) => `[${i.severity}] ${i.text.split("\n")[0]}`;
+const itemLine = (i) => `[${i.severity}] ${i.id ? `${i.id}: ` : ""}${i.text.split("\n")[0]}`;
 /** For a finding resolved by absence, the names that are gone; else "". */
 
 /**
@@ -942,7 +1061,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
   const out = [`review of ${short(head)} (${range}) in ${top}, round ${round} of ${max}${round > max ? " (forced)" : ""}:`];
   let anyFindings = false;
   const record = (lab, given, judged = [], fromRound = null) => {
-    const stored = publishLabRow(db, dbPath, { sessionId, cwd: top, head, base: branchBase ?? ROOT_BASE, branch, lab, model: given.model, verdict: given.verdict, findings: given.findings, items: given.items, reason: given.reason ?? null, at: nowIso(now()) });
+    const stored = publishLabRow(db, dbPath, { sessionId, cwd: top, head, base: branchBase ?? ROOT_BASE, branch, lab, model: given.model, verdict: given.verdict, findings: given.findings, items: given.items, reason: given.reason ?? null, at: given.at ?? nowIso(now()) });
     const r = { ...stored, carried: given.carried };
     const model = r.model ? ` (${r.model})` : "";
     if (r.verdict === "findings") {
@@ -958,8 +1077,13 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
     const res = results[i];
     let r = res.status === "fulfilled" ? res.value : { verdict: "unavailable", reason: res.reason?.message ?? String(res.reason), model: null, findings: null, items: [] };
     const before = owed.get(lab);
+    const at = nowIso(now());
+    const ids = { rounds, lab, head, at };
     if (r.verdict === "unavailable") {
-      record(lab, before ? { ...carried(before, `unavailable (${r.reason}); its findings from round ${before.round} stay open`), carried: true } : r);
+      if (before) {
+        const c = carried(before, `unavailable (${r.reason}); its findings from round ${before.round} stay open`);
+        record(lab, { ...c, items: assignIds(c.items, ids), carried: true, at });
+      } else record(lab, { ...r, at });
       continue;
     }
     // A finding the lab lists again keeps the `since` of the one it repeats; a new one starts here.
@@ -980,20 +1104,23 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
       if (rs) out.receipt = rs;
       return out;
     };
-    if (r.items?.length) r = { ...r, items: r.items.map(tagged) };
+    if (r.items?.length) r = { ...r, items: matchOwed(r.items.map(tagged), before, ids) };
     const judged = [];
     const dropped = before ? before.items.filter((it) => !stillListed(it, r.items ?? [])) : [];
     if (dropped.length) {
       judged.push(...(await judgeItems({ db, dbPath, config, env, top, fromSha: before.row.head_sha, toSha: head, items: dropped, receipt: receipt.text, receiptSha, receiptUnreadable: Boolean(receipt.unreadable) })));
-      const noted = judged.map((it) => (it.judge === "no" ? { ...it, note: `from round ${before.round}; the judge says it is not resolved` } : it));
-      const items = [...(r.items ?? []), ...noted];
-      r = { ...r, items, verdict: verdictOf(items) };
     }
-    record(lab, r, judged, before?.round);
+    const noted = judged.map((it) => (it.judge === "no" ? { ...it, note: `from round ${before.round}; the judge says it is not resolved` } : it));
+    const items = assignIds(r.items ?? [], { ...ids, history: identityHistory(rounds, lab), judged: noted });
+    if (dropped.length) r = { ...r, items, verdict: verdictOf(items) };
+    else r = { ...r, items };
+    record(lab, { ...r, at }, judged, before?.round);
   }
   for (const [lab, entry] of owed) {
     if (list.includes(lab)) continue;
-    record(lab, { ...carried(entry, `not run this time; its findings from round ${entry.round} stay open`), carried: true });
+    const at = nowIso(now());
+    const c = carried(entry, `not run this time; its findings from round ${entry.round} stay open`);
+    record(lab, { ...c, items: assignIds(c.items, { rounds, lab, head, at }), carried: true, at });
   }
   if (anyFindings) {
     out.push(

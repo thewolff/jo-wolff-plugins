@@ -141,7 +141,7 @@ test("review (c): addressed needs a reason and an earlier commit's findings; wit
   commit(b, "c.txt", "fix\n");
   const r = review(b, ["addressed", "the bug is fixed in c.txt"], { LEDGER_JUDGE_BIN: judge(b, "yes") });
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /^ {2}judge yes: \[blocking\] c\.txt:1 bug$/m);
+  assert.match(r.out, /^ {2}judge yes: \[blocking\] (?:fd-[a-z0-9]+: )?c\.txt:1 bug$/m);
   assert.equal(push(b).out, "");
   assert.deepEqual(reviewBounces(b), [], "no bounce: the push was never denied");
 });
@@ -308,7 +308,7 @@ test("review loop: pass-with-nits allows with a notice listing the nits", () => 
   assert.equal(reviews(b)[0].verdict, "pass-with-nits");
   const p = push(b);
   assert.equal(decision(p), "allow");
-  assert.match(p.json.systemMessage, /review passed for [0-9a-f]{8}; nits, optional:[\s\S]*\[nit\] a\.txt:1 trailing space/);
+  assert.match(p.json.systemMessage, /review passed for [0-9a-f]{8}; nits, optional:[\s\S]*\[nit\] (?:fd-[a-z0-9]+: )?a\.txt:1 trailing space/);
 });
 
 test("review loop: findings → fix → pass over two shas; status shows rounds 1 and 2", () => {
@@ -320,7 +320,7 @@ test("review loop: findings → fix → pass over two shas; status shows rounds 
   commit(b, "a.txt", "fixed\n");
   const second = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: judge(b, "yes") });
   assert.match(second.out, /round 2 of 3:/);
-  assert.match(second.out, /^ {2}judge yes: \[blocking\] a\.txt:1 wrong value \(round 1\)$/m);
+  assert.match(second.out, /^ {2}judge yes: \[blocking\] (?:fd-[a-z0-9]+: )?a\.txt:1 wrong value \(round 1\)$/m);
   assert.equal(push(b).out, "");
   const status = review(b, ["status"]).out;
   assert.match(status, /^round  sha       lab      blocking  should  nit  verdict$/m);
@@ -349,7 +349,7 @@ test("judge: no on an addressed claim keeps the gate closed and names the findin
   const no = judge(b, "no");
   const r = review(b, ["addressed", "it is fine"], { LEDGER_JUDGE_BIN: no });
   assert.equal(r.code, 1);
-  assert.match(r.out, /^refused the judge says these findings on [0-9a-f]{8} are not resolved by [0-9a-f]{8}; the gate stays closed:\ncodex: \[blocking\] a\.txt:1 wrong value\n$/);
+  assert.match(r.out, /^refused the judge says these findings on [0-9a-f]{8} are not resolved by [0-9a-f]{8}; the gate stays closed:\ncodex: \[blocking\] (?:fd-[a-z0-9]+: )?a\.txt:1 wrong value\n$/);
   assert.match(readFileSync(`${no}.prompt`, "utf8"), /Does this change resolve the finding\? Answer yes or no\./);
   const p = push(b);
   assert.equal(decision(p), "deny");
@@ -357,7 +357,11 @@ test("judge: no on an addressed claim keeps the gate closed and names the findin
   const db = openDb(b);
   const items = JSON.parse(db.prepare("SELECT findings_json FROM cc_reviews ORDER BY id DESC LIMIT 1").get().findings_json);
   db.close();
-  assert.deepEqual(items, [{ severity: "blocking", text: "a.txt:1 wrong value", since: raised, resolved: false, judge: "no" }]);
+  // 0.4.12: the finding keeps the fd- id and raisedAt it was given in round 1.
+  const [{ id, raisedAt, ...rest }] = items;
+  assert.match(id, /^fd-[a-z0-9]+$/);
+  assert.match(raisedAt, /^\d{4}-\d\d-\d\dT/);
+  assert.deepEqual([rest], [{ severity: "blocking", text: "a.txt:1 wrong value", since: raised, resolved: false, judge: "no" }]);
 });
 
 test("judge: no on a finding a later round dropped keeps it open in that round", () => {
@@ -366,7 +370,7 @@ test("judge: no on a finding a later round dropped keeps it open in that round",
   commit(b, "a.txt", "still wrong\n");
   const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: judge(b, "no") });
   assert.match(r.out, /^codex: findings: 0 blocking, 1 should, 0 nit$/m);
-  assert.match(r.out, /\[should\] a\.txt:1 missing check \(from round 1; the judge says it is not resolved\)/);
+  assert.match(r.out, /\[should\] (?:fd-[a-z0-9]+: )?a\.txt:1 missing check \(from round 1; the judge says it is not resolved\)/);
   assert.equal(decision(push(b)), "deny");
 });
 
@@ -376,10 +380,10 @@ test("judge: missing → unverified, counted as resolved, and the gate allows wi
   commit(b, "a.txt", "fixed\n");
   const r = review(b, ["addressed", "fixed it"], { LEDGER_JUDGE_BIN: join(b.root, "no-such-judge") });
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /^ {2}judge unverified: \[blocking\] a\.txt:1 wrong value$/m);
+  assert.match(r.out, /^ {2}judge unverified: \[blocking\] (?:fd-[a-z0-9]+: )?a\.txt:1 wrong value$/m);
   const p = push(b);
   assert.equal(decision(p), "allow");
-  assert.match(p.json.systemMessage, /review addressed for [0-9a-f]{8}; 1 finding\(s\) counted as resolved but unverified by the judge: \[blocking\] a\.txt:1 wrong value/);
+  assert.match(p.json.systemMessage, /review addressed for [0-9a-f]{8}; 1 finding\(s\) counted as resolved but unverified by the judge: \[blocking\] (?:fd-[a-z0-9]+: )?a\.txt:1 wrong value/);
 });
 
 test("judge: a cached answer does not run the judge again", async () => {
@@ -838,7 +842,7 @@ test("R2-B3: a same-commit retry, a downgrade to nit and a skipped or unavailabl
   const no = judge(b, "no");
   // The same commit again, now passing: the judge is asked, says no, and the finding stays.
   let r = review(b, ["--labs", "codex"], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
-  assert.match(r.out, /^ {2}judge no: \[blocking\] a\.txt:1 wrong value \(round 1\)$/m);
+  assert.match(r.out, /^ {2}judge no: \[blocking\] (?:fd-[a-z0-9]+: )?a\.txt:1 wrong value \(round 1\)$/m);
   assert.equal(decision(push(b)), "deny");
   // Listed again only as a nit on a new commit: still a removal, so judged.
   commit(b, "z.txt", "unrelated\n");
@@ -931,12 +935,12 @@ test("R3-B1: --base changes only the diff the labs read; it cannot drop a findin
   review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] b.txt:1 wrong value") });
   const no = judge(b, "no");
   let r = review(b, ["--base", "HEAD"], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
-  assert.match(r.out, /^ {2}judge no: \[blocking\] b\.txt:1 wrong value \(round 1\)$/m, "an empty diff is not a pass over an open finding");
+  assert.match(r.out, /^ {2}judge no: \[blocking\] (?:fd-[a-z0-9]+: )?b\.txt:1 wrong value \(round 1\)$/m, "an empty diff is not a pass over an open finding");
   assert.equal(decision(push(b)), "deny");
   commit(b, "z.txt", "unrelated\n");
   r = review(b, ["--base", "HEAD~1"], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
   assert.match(r.out, /round 2 of 3:/, "rounds count from the branch's base, not --base");
-  assert.match(r.out, /^ {2}judge no: \[blocking\] b\.txt:1 wrong value \(round 1\)$/m, "a base moved past the finding's commit still reconciles it");
+  assert.match(r.out, /^ {2}judge no: \[blocking\] (?:fd-[a-z0-9]+: )?b\.txt:1 wrong value \(round 1\)$/m, "a base moved past the finding's commit still reconciles it");
   assert.equal(decision(push(b)), "deny");
   const db = openDb(b);
   try {
@@ -954,7 +958,7 @@ test("R3-B2: a later review of an ancestor does not clear a descendant's finding
   review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS") });
   git(b, "checkout", "-q", "feat");
   const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: judge(b, "no") });
-  assert.match(r.out, /^ {2}judge no: \[blocking\] c\.txt:1 bug \(round 1\)$/m);
+  assert.match(r.out, /^ {2}judge no: \[blocking\] (?:fd-[a-z0-9]+: )?c\.txt:1 bug \(round 1\)$/m);
   assert.equal(decision(push(b)), "deny");
 });
 
@@ -1270,11 +1274,11 @@ test("0.4.6 (a): a finding judged no keeps the round that raised it; a later rou
   review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] card.tsx:1 x is broken") });
   const fixed = commit(b, "card.tsx", "const x = FIXED_VALUE;\n");
   let r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: judge(b, "no") });
-  assert.match(r.out, /^ {2}judge no: \[blocking\] card\.tsx:1 x is broken \(round 1\)$/m);
+  assert.match(r.out, /^ {2}judge no: \[blocking\] (?:fd-[a-z0-9]+: )?card\.tsx:1 x is broken \(round 1\)$/m);
   commit(b, "other.ts", "export const unrelated = 1;\n");
   const cond = needleJudge(b, "a", FIX);
   r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
-  assert.match(r.out, /^ {2}judge yes: \[blocking\] card\.tsx:1 x is broken \(round 2\)$/m, r.out);
+  assert.match(r.out, /^ {2}judge yes: \[blocking\] (?:fd-[a-z0-9]+: )?card\.tsx:1 x is broken \(round 2\)$/m, r.out);
   assert.match(r.out, /^codex: pass$/m);
   const passage = readFileSync(`${cond}.prompt`, "utf8");
   const hunk = passage.indexOf(FIX);
@@ -1298,7 +1302,7 @@ test("0.4.6 (b): a fix in a sibling file the finding does not name is in the pas
   commit(b, "helper.ts", "export const helper = () => NEVER_NULL;\n");
   const cond = needleJudge(b, "b", "+export const helper = () => NEVER_NULL;");
   const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
-  assert.match(r.out, /^ {2}judge yes: \[should\] card\.tsx:1 helper can return null \(round 1\)$/m, r.out);
+  assert.match(r.out, /^ {2}judge yes: \[should\] (?:fd-[a-z0-9]+: )?card\.tsx:1 helper can return null \(round 1\)$/m, r.out);
   const passage = readFileSync(`${cond}.prompt`, "utf8");
   assert.match(passage, /Change \(unified diff\):\n\(no change to the files the finding names\)\n/);
   assert.match(passage, /File: helper\.ts\n/);
@@ -1311,7 +1315,7 @@ test("0.4.6 (c): a finding about the pattern-check receipt is judged with the re
   writeFileSync(join(b.work, ".pattern-check", "r.md"), "| timeout | RECOVERY_STEP_KILL_GROUP |\n");
   const cond = needleJudge(b, "c", "RECOVERY_STEP_KILL_GROUP");
   const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
-  assert.match(r.out, /^ {2}judge yes: \[blocking\] the timeout row has no recovery step \(round 1\)$/m, r.out);
+  assert.match(r.out, /^ {2}judge yes: \[blocking\] (?:fd-[a-z0-9]+: )?the timeout row has no recovery step \(round 1\)$/m, r.out);
   const passage = readFileSync(`${cond}.prompt`, "utf8");
   assert.match(passage, /Change \(unified diff\):\n\(no changes since the finding was raised\)\n\nPattern-check receipt \(current text\):\n\| timeout \| RECOVERY_STEP_KILL_GROUP \|/);
 });
@@ -1333,7 +1337,7 @@ test("0.4.6 (d): a row written before `since` existed still judges, from that ro
   commit(b, "card.tsx", "const x = FIXED_VALUE;\n");
   const cond = needleJudge(b, "d", FIX);
   const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
-  assert.match(r.out, /^ {2}judge yes: \[blocking\] card\.tsx:1 x is broken \(round 1\)$/m, r.out);
+  assert.match(r.out, /^ {2}judge yes: \[blocking\] (?:fd-[a-z0-9]+: )?card\.tsx:1 x is broken \(round 1\)$/m, r.out);
 });
 
 test("0.4.6 R1-1: a finding that only says \"receipt\" is not about the pattern-check receipt and gets no receipt text", async () => {
@@ -1396,7 +1400,7 @@ test("0.4.6 R1-3: a finding carried through skipped and unavailable rounds keeps
   commit(b, "other.ts", "export const unrelated = 1;\n");
   const cond = needleJudge(b, "carry", FIX);
   r = review(b, ["--labs", "codex"], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
-  assert.match(r.out, /^ {2}judge yes: \[blocking\] card\.tsx:1 x is broken/m, r.out);
+  assert.match(r.out, /^ {2}judge yes: \[blocking\] (?:fd-[a-z0-9]+: )?card\.tsx:1 x is broken/m, r.out);
   assert.ok(readFileSync(`${cond}.prompt`, "utf8").includes(FIX));
 });
 
@@ -1418,7 +1422,7 @@ test("absent: an identifier gone from the tree is evidence at the top of the pas
   commitAt(b, "lib/card.ts", "export function fresh() {\n  return now();\n}\n");
   const cond = needleJudge(b, "evidence", EVIDENCE);
   const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
-  assert.match(r.out, /^ {2}judge yes: \[should\] lib\/card\.ts:1 `committedSince` returns stale state \(round 1\)$/m, r.out);
+  assert.match(r.out, /^ {2}judge yes: \[should\] (?:fd-[a-z0-9]+: )?lib\/card\.ts:1 `committedSince` returns stale state \(round 1\)$/m, r.out);
   const passage = readFileSync(`${cond}.prompt`, "utf8");
   const at = passage.indexOf("Evidence from the tree:\n" + EVIDENCE);
   assert.ok(at > 0 && at < passage.indexOf("The files the finding names"), "the evidence comes right after the finding");
@@ -1434,7 +1438,7 @@ test("absent: a rename that keeps the bug is not resolved by the absence; a judg
   const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
   assert.equal(calls(no), 1, "the judge is asked");
   assert.match(readFileSync(`${no}.prompt`, "utf8"), /Evidence from the tree:\n`committedSince` named in the finding/);
-  assert.match(r.out, /\[should\] lib\/card\.ts:1 `committedSince` returns stale state \(from round 1; the judge says it is not resolved\)/, r.out);
+  assert.match(r.out, /\[should\] (?:fd-[a-z0-9]+: )?lib\/card\.ts:1 `committedSince` returns stale state \(from round 1; the judge says it is not resolved\)/, r.out);
   assert.equal(decision(push(b)), "deny");
 });
 
@@ -1456,7 +1460,7 @@ test("absent: an identifier that was never there (a finding about something miss
   const no = judge(b, "no");
   const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
   assert.equal(calls(no), 1);
-  assert.match(r.out, /\[blocking\] auth\.ts:1 `validateToken` is never called before login \(from round 1; the judge says it is not resolved\)/, r.out);
+  assert.match(r.out, /\[blocking\] (?:fd-[a-z0-9]+: )?auth\.ts:1 `validateToken` is never called before login \(from round 1; the judge says it is not resolved\)/, r.out);
   assert.equal(decision(push(b)), "deny");
 });
 
@@ -1468,7 +1472,7 @@ test("absent: a named path that resolves to no file gets no evidence line, even 
   const no = judge(b, "no");
   const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
   assert.equal(calls(no), 1, "the judge decides");
-  assert.match(r.out, /^ {2}judge no: \[should\] wrong\/path\.ts:3 `staleFn` leaks a handle \(round 1\)$/m, r.out);
+  assert.match(r.out, /^ {2}judge no: \[should\] (?:fd-[a-z0-9]+: )?wrong\/path\.ts:3 `staleFn` leaks a handle \(round 1\)$/m, r.out);
   assert.doesNotMatch(readFileSync(`${no}.prompt`, "utf8"), /Evidence from the tree/);
 });
 
@@ -1480,7 +1484,7 @@ test("passage: a fix that lives in a test file is in the passage, with the named
   commitAt(b, "notes.md", "unrelated\n");
   const cond = needleJudge(b, "tests", "EMPTY_INPUT_CASE");
   const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: cond });
-  assert.match(r.out, /^ {2}judge yes: \[should\] src\/parse\.ts:1 `parse` has no test for empty input \(round 1\)$/m, r.out);
+  assert.match(r.out, /^ {2}judge yes: \[should\] (?:fd-[a-z0-9]+: )?src\/parse\.ts:1 `parse` has no test for empty input \(round 1\)$/m, r.out);
   const passage = readFileSync(`${cond}.prompt`, "utf8");
   assert.match(passage, /The files the finding names, as they are at HEAD [^\n]*:\nFile: src\/parse\.ts \(lines 1-1 at HEAD\)\n {3}1\| export const parse = \(s\) => s\.trim\(\);/);
   assert.match(passage, /Test files changed since the finding was raised that refer to it \(unified diff\):\nFile: test\/parse\.test\.mjs\n/);
@@ -1660,7 +1664,7 @@ for (const [keep, past, what] of [[15, false, "its end"], [5, true, "its start a
     const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: no });
     assert.equal(r.code, 0, r.out);
     assert.equal(calls(no), 1, `the judge is asked (file cut to ${keep} lines)`);
-    assert.match(r.out, /\[should\] file\.ts:10-20 the loop body is wrong \(from round 1; the judge says it is not resolved\)/, r.out);
+    assert.match(r.out, /\[should\] (?:fd-[a-z0-9]+: )?file\.ts:10-20 the loop body is wrong \(from round 1; the judge says it is not resolved\)/, r.out);
     const passage = readFileSync(`${no}.prompt`, "utf8");
     assert.match(passage, new RegExp(`File: file\\.ts \\(lines 1-${keep} at HEAD\\)\\n`), passage);
     assert.match(passage, new RegExp(`\\s${keep}\\| line${keep}\\(\\);`));
