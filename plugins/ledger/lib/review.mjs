@@ -480,7 +480,11 @@ export function citedPaths(top, fromSha, toSha, texts) {
   };
   for (const raw of texts) {
     const text = String(raw ?? "").normalize("NFC");
-    const candidates = []; // { value, strict, quoted }
+    // { value, strict, quoted, start, end, pass }: `start`/`end` is the text the candidate came from;
+    // pass 0 (quoted spans, line references) resolves first, then pass 1 (whitespace tokens), then
+    // pass 2 (namedFiles matches). A later candidate inside the text of one that resolved is a
+    // fragment of that citation and is dropped (REV-03: `docs/naïve.md` is not also `ve.md`).
+    const candidates = [];
     const spans = quotedSpans(text);
     // A quoted span is a path candidate when it has a slash or a dot, or when it names a tracked
     // path or a tracked extensionless basename (`Makefile`), a trailing line number stripped.
@@ -490,11 +494,12 @@ export function citedPaths(top, fromSha, toSha, texts) {
     };
     for (const s of spans) {
       const v = spanPath(s.value);
-      if (v) candidates.push({ value: v, strict: true, quoted: true });
+      if (v) candidates.push({ value: v, strict: true, quoted: true, start: s.start, end: s.end, pass: 0 });
     }
     // Every `X:N`: X runs back to a quote, parenthesis, whitespace or the start; a line number right
-    // after a closing quote belongs to that quoted span. Inside a quoted span, X runs back to
-    // whitespace or the span's start, and must resolve like any other cited path.
+    // after a closing quote belongs to that quoted span. Inside a quoted span, X is the whole quoted
+    // text before the line number, spaces kept, when that resolves; else it runs back to whitespace
+    // or the span's start, and must resolve like any other cited path.
     const lineRefsOk = [];
     for (const m of text.matchAll(LINE_REF)) {
       const k = m.index;
@@ -505,32 +510,42 @@ export function citedPaths(top, fromSha, toSha, texts) {
       }
       const inside = spans.find((s) => k > s.start && k < s.end);
       if (inside) {
+        const whole = text.slice(inside.start + 1, k).replace(/^\.\//, "");
         let x = k;
-        while (x > inside.start + 1 && !/\s/.test(text[x - 1])) x--;
+        if (whole && resolve(whole).path) x = inside.start + 1;
+        else while (x > inside.start + 1 && !/\s/.test(text[x - 1])) x--;
         const value = text.slice(x, k).replace(/^\.\//, "");
-        if (value) candidates.push({ value, strict: true, quoted: true });
+        if (value) candidates.push({ value, strict: true, quoted: true, start: x, end: k, pass: 0 });
         lineRefsOk.push(value || null);
         continue;
       }
       let x = k;
       while (x > 0 && !/[\s`"'(]/.test(text[x - 1])) x--;
       const value = text.slice(x, k).replace(/^\.\//, "");
-      if (value) candidates.push({ value, strict: true, quoted: false });
+      if (value) candidates.push({ value, strict: true, quoted: false, start: x, end: k, pass: 0 });
       lineRefsOk.push(value || null);
     }
     const unquoted = spans.reduceRight((t, s) => t.slice(0, s.start) + " ".repeat(s.end - s.start) + t.slice(s.end), text);
-    for (const f of namedFiles(unquoted)) candidates.push({ value: f, strict: f.includes("/") || exts.has(extOf(f)), quoted: false });
-    for (const tok of unquoted.split(/\s+/)) {
-      const t = tok.replace(/^[(\[{<]+/, "").replace(/[)\]}>.,;:!?]+$/, "").replace(/:\d+(?:-\d+)?$/, "");
-      if (!t) continue;
-      if (t.includes("/") || tracked.has(t) || basenames.has(t)) candidates.push({ value: t.replace(/^\.\//, ""), strict: t.includes("/") || exts.has(extOf(t)), quoted: false });
+    // namedFiles's pattern, kept here for each match's position.
+    for (const m of unquoted.matchAll(/([A-Za-z0-9_.\/-]+\.[A-Za-z0-9]+)(?::\d+)?/g)) {
+      const f = m[1].replace(/^\.\//, "");
+      candidates.push({ value: f, strict: f.includes("/") || exts.has(extOf(f)), quoted: false, start: m.index, end: m.index + m[1].length, pass: 2 });
     }
+    for (const m of unquoted.matchAll(/\S+/g)) {
+      const t = m[0].replace(/^[(\[{<]+/, "").replace(/[)\]}>.,;:!?]+$/, "").replace(/:\d+(?:-\d+)?$/, "");
+      if (!t) continue;
+      if (t.includes("/") || tracked.has(t) || basenames.has(t)) candidates.push({ value: t.replace(/^\.\//, ""), strict: t.includes("/") || exts.has(extOf(t)), quoted: false, start: m.index, end: m.index + m[0].length, pass: 1 });
+    }
+    candidates.sort((a, b) => a.pass - b.pass);
     const resolvedHere = new Set();
+    const resolvedRanges = [];
     for (const c of candidates) {
+      if (c.pass > 0 && resolvedRanges.some(([s0, e0]) => c.start >= s0 && c.end <= e0)) continue;
       const r = resolve(c.value);
       if (r.path) {
         resolved.add(r.path);
         resolvedHere.add(c.value);
+        resolvedRanges.push([c.start, c.end]);
       } else if (r.ambiguous) block("cites an ambiguous path");
       else if (c.quoted || c.strict) block("cites a path that does not resolve");
     }
