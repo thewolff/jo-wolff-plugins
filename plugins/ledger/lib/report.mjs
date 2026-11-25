@@ -44,7 +44,9 @@ export const DISPOSITION_NAMES = ["wrong", "intentional", "doesnt-matter"];
  * Findings per lab in the window (0.4.12): raised counts distinct finding ids whose raisedAt is in
  * the window, once each under the severity of its earliest stored copy, from at most
  * FINDING_ROWS_MAX lab rows (`cut` when the limit cut); dismissals are the cc_dismissals rows in
- * the window (a carried dismissal writes no row, so it is not counted twice).
+ * the window (a carried dismissal writes no row, so it is not counted twice), counted in full by
+ * lab and disposition and listed newest first up to FINDING_ROWS_MAX (`dismissalCount` is the
+ * whole count, `dismissalsCut` when the list was cut).
  */
 function gatherFindings(db, from) {
   const rows = db.prepare("SELECT lab, findings_json FROM cc_reviews WHERE lab <> 'ledger' AND findings_json IS NOT NULL AND at >= ? ORDER BY id ASC LIMIT ?").all(from, FINDING_ROWS_MAX + 1);
@@ -70,13 +72,17 @@ function gatherFindings(db, from) {
     l.raised++;
     l.bySeverity[f.severity] = (l.bySeverity[f.severity] ?? 0) + 1;
   }
-  const dismissals = db.prepare("SELECT id, finding_id, cwd, head_sha, lab, disposition, reason, at FROM cc_dismissals WHERE at >= ? ORDER BY at DESC, rowid DESC").all(from).map((r) => ({ ...r }));
-  for (const d of dismissals) {
+  let dismissalCount = 0;
+  for (const d of db.prepare("SELECT lab, disposition, COUNT(*) AS n FROM cc_dismissals WHERE at >= ? GROUP BY lab, disposition").all(from)) {
     const l = lab(d.lab);
-    l.dismissed++;
-    l.byDisposition[d.disposition] = (l.byDisposition[d.disposition] ?? 0) + 1;
+    l.dismissed += d.n;
+    l.byDisposition[d.disposition] = (l.byDisposition[d.disposition] ?? 0) + d.n;
+    dismissalCount += d.n;
   }
-  return { cut, labs: [...labs.values()].sort((a, b) => a.lab.localeCompare(b.lab)), dismissals };
+  const listed = db.prepare("SELECT id, finding_id, cwd, head_sha, lab, disposition, reason, at FROM cc_dismissals WHERE at >= ? ORDER BY at DESC, rowid DESC LIMIT ?").all(from, FINDING_ROWS_MAX + 1);
+  const dismissalsCut = listed.length > FINDING_ROWS_MAX;
+  const dismissals = listed.slice(0, FINDING_ROWS_MAX).map((r) => ({ ...r }));
+  return { cut, labs: [...labs.values()].sort((a, b) => a.lab.localeCompare(b.lab)), dismissals, dismissalCount, dismissalsCut };
 }
 
 /** The rows and counts of the window. Pure reads. */
@@ -197,7 +203,8 @@ export function render(data) {
   const f = data.findings ?? { cut: false, labs: [], dismissals: [] };
   lines.push(`findings per lab:${f.cut ? ` (the newest lab rows past ${FINDING_ROWS_MAX} in the window were not read)` : ""}${f.labs.length ? "" : " none"}`);
   for (const l of f.labs) lines.push(`  ${l.lab} raised ${l.raised} · dismissed ${l.dismissed} (${DISPOSITION_NAMES.map((d) => `${d} ${l.byDisposition[d] ?? 0}`).join(", ")})`);
-  lines.push(`dismissals: ${f.dismissals.length}`);
+  const total = f.dismissalCount ?? f.dismissals.length;
+  lines.push(`dismissals: ${total}${f.dismissalsCut ? ` (the oldest ${total - f.dismissals.length} past ${FINDING_ROWS_MAX} are not listed)` : ""}`);
   for (const d of f.dismissals) lines.push(`  ${d.at} ${d.head_sha.slice(0, 7)} ${d.lab} ${d.finding_id} ${d.disposition} · ${d.reason} · ${d.cwd}`);
   lines.push("");
   lines.push(`reviews waived: ${data.waived.length}`);

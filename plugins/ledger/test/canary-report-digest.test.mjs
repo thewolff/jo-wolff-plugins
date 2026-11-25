@@ -744,3 +744,24 @@ test("report: a finding raised before the window and carried inside it is not co
   assert.match(text, /^dismissals: 2\n  \S+ ccccccc codex fd-(new|old)1 (intentional|wrong) · /m);
   assert.match(text, /^reviews waived: 0$/m);
 });
+
+test("report: dismissals past FINDING_ROWS_MAX are counted in full but listed only up to the cap, newest first, with a marker", async () => {
+  const { FINDING_ROWS_MAX } = await import("../lib/report.mjs");
+  const b = sandbox();
+  const db = openDb(b);
+  const n = FINDING_ROWS_MAX + 1;
+  const base = Date.now() - D;
+  const dm = db.prepare("INSERT INTO cc_dismissals (id, finding_id, cwd, head_sha, lab, severity, text, disposition, reason, by, via, at) VALUES (?,?,?,?,?,?,?,?,?,?,'prompt-hook',?)");
+  db.exec("BEGIN");
+  for (let i = 0; i < n; i++) dm.run(`dm-${i}`, `fd-${i}`, b.work, "ccccccc3", "codex", "should", "t", i % 2 ? "wrong" : "intentional", `r${i}`, "Jo", nowIso(base + i * 1000));
+  db.exec("COMMIT");
+  db.close();
+  const data = withStore(b, (s) => gather(s.db, { since: "7d" }));
+  assert.equal(data.findings.dismissals.length, FINDING_ROWS_MAX);
+  assert.equal(data.findings.dismissals[0].finding_id, `fd-${n - 1}`, "newest first");
+  const [codex] = data.findings.labs;
+  assert.deepEqual([codex.dismissed, codex.byDisposition.wrong, codex.byDisposition.intentional], [n, FINDING_ROWS_MAX / 2, FINDING_ROWS_MAX / 2 + 1]);
+  const text = render(data);
+  assert.match(text, new RegExp(`^dismissals: ${n} \\(the oldest ${n - FINDING_ROWS_MAX} past ${FINDING_ROWS_MAX} are not listed\\)$`, "m"));
+  assert.equal(text.split("\n").filter((l) => / codex fd-\d+ (wrong|intentional) · /.test(l)).length, FINDING_ROWS_MAX);
+});
