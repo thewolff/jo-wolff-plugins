@@ -37,6 +37,48 @@ export function mechanicalGrade({ fired, bypassed, sessions }) {
   return "fine";
 }
 
+export const FINDING_ROWS_MAX = 5000;
+export const DISPOSITION_NAMES = ["wrong", "intentional", "doesnt-matter"];
+
+/**
+ * Findings per lab in the window (0.4.12): raised counts distinct finding ids whose raisedAt is in
+ * the window, once each under the severity of its earliest stored copy, from at most
+ * FINDING_ROWS_MAX lab rows (`cut` when the limit cut); dismissals are the cc_dismissals rows in
+ * the window (a carried dismissal writes no row, so it is not counted twice).
+ */
+function gatherFindings(db, from) {
+  const rows = db.prepare("SELECT lab, findings_json FROM cc_reviews WHERE lab <> 'ledger' AND findings_json IS NOT NULL AND at >= ? ORDER BY id ASC LIMIT ?").all(from, FINDING_ROWS_MAX + 1);
+  const cut = rows.length > FINDING_ROWS_MAX;
+  const first = new Map(); // id → { lab, severity, raisedAt }
+  for (const r of rows.slice(0, FINDING_ROWS_MAX)) {
+    let items = [];
+    try {
+      items = JSON.parse(r.findings_json);
+    } catch {
+      continue;
+    }
+    for (const i of items) if (i?.id && !first.has(i.id)) first.set(i.id, { lab: r.lab, severity: i.severity, raisedAt: i.raisedAt ?? null });
+  }
+  const labs = new Map();
+  const lab = (name) => {
+    if (!labs.has(name)) labs.set(name, { lab: name, raised: 0, bySeverity: {}, dismissed: 0, byDisposition: Object.fromEntries(DISPOSITION_NAMES.map((d) => [d, 0])) });
+    return labs.get(name);
+  };
+  for (const f of first.values()) {
+    if (!f.raisedAt || f.raisedAt < from) continue;
+    const l = lab(f.lab);
+    l.raised++;
+    l.bySeverity[f.severity] = (l.bySeverity[f.severity] ?? 0) + 1;
+  }
+  const dismissals = db.prepare("SELECT id, finding_id, cwd, head_sha, lab, disposition, reason, at FROM cc_dismissals WHERE at >= ? ORDER BY at DESC, rowid DESC").all(from).map((r) => ({ ...r }));
+  for (const d of dismissals) {
+    const l = lab(d.lab);
+    l.dismissed++;
+    l.byDisposition[d.disposition] = (l.byDisposition[d.disposition] ?? 0) + 1;
+  }
+  return { cut, labs: [...labs.values()].sort((a, b) => a.lab.localeCompare(b.lab)), dismissals };
+}
+
 /** The rows and counts of the window. Pure reads. */
 export function gather(db, { now = Date.now(), since = BOUNCES_DEFAULT_SINCE } = {}) {
   const span = parseSpan(since) ?? parseSpan(BOUNCES_DEFAULT_SINCE);
@@ -52,13 +94,14 @@ export function gather(db, { now = Date.now(), since = BOUNCES_DEFAULT_SINCE } =
   const canary = db.prepare("SELECT id, plugin, at, status, exit_code, duration_ms, grade, graded_by, note, diff, tree_sha FROM cc_canary_runs WHERE at >= ? ORDER BY at DESC, id DESC").all(from).map((r) => ({ ...r }));
   const prunes = db.prepare("SELECT id, plugin, at, path, status, bytes_freed, note FROM cc_canary_prunes WHERE at >= ? ORDER BY at DESC, id DESC").all(from).map((r) => ({ ...r }));
   const waived = db.prepare("SELECT at, head_sha, branch, cwd, reason FROM cc_reviews WHERE verdict = 'waived' AND at >= ? ORDER BY at DESC").all(from).map((r) => ({ ...r }));
+  const findings = gatherFindings(db, from);
   let judgements = [];
   try {
     judgements = judgementsSince(db, now - span).map((r) => ({ ...r }));
   } catch {
     judgements = [];
   }
-  return { from, since, span, sessions, rules, owed: gatherOwed(db, { from, now }), canary, prunes, waived, judgements };
+  return { from, since, span, sessions, rules, owed: gatherOwed(db, { from, now }), canary, prunes, waived, findings, judgements };
 }
 
 /** Owed work in the window, per origin, and the deferred items now. Pure reads. */
@@ -150,6 +193,12 @@ export function render(data) {
   const byPath = new Map();
   for (const r of p) if (!byPath.has(`${r.plugin} ${r.path}`)) byPath.set(`${r.plugin} ${r.path}`, r);
   for (const [, r] of byPath) lines.push(`  ${pad(r.plugin, 16)} ${r.path} last ${r.status} #${r.id} ${r.at}${r.bytes_freed !== null ? ` ${r.bytes_freed} bytes freed` : ""}${r.status !== "pass" && r.note ? ` (${r.note})` : ""}`);
+  lines.push("");
+  const f = data.findings ?? { cut: false, labs: [], dismissals: [] };
+  lines.push(`findings per lab:${f.cut ? ` (the newest lab rows past ${FINDING_ROWS_MAX} in the window were not read)` : ""}${f.labs.length ? "" : " none"}`);
+  for (const l of f.labs) lines.push(`  ${l.lab} raised ${l.raised} · dismissed ${l.dismissed} (${DISPOSITION_NAMES.map((d) => `${d} ${l.byDisposition[d] ?? 0}`).join(", ")})`);
+  lines.push(`dismissals: ${f.dismissals.length}`);
+  for (const d of f.dismissals) lines.push(`  ${d.at} ${d.head_sha.slice(0, 7)} ${d.lab} ${d.finding_id} ${d.disposition} · ${d.reason} · ${d.cwd}`);
   lines.push("");
   lines.push(`reviews waived: ${data.waived.length}`);
   for (const w of data.waived) lines.push(`  ${w.at} ${w.head_sha.slice(0, 7)}${w.branch ? ` ${w.branch}` : ""} · ${w.reason ?? "(no reason)"} · ${w.cwd}`);

@@ -713,3 +713,34 @@ test("digest install and the CLI: the Monday 09:00 plist, the bootstrap line; `d
   const batch = cli(b, [], { input: "digest\n" });
   assert.match(batch.out, /digest runs on its own line/);
 });
+
+test("report: a finding raised before the window and carried inside it is not counted as raised; dismissals count from cc_dismissals by lab and disposition", () => {
+  const b = sandbox();
+  const db = openDb(b);
+  const at = (ago) => nowIso(Date.now() - ago);
+  const row = db.prepare("INSERT INTO cc_reviews (cwd, head_sha, branch, lab, verdict, findings_json, at) VALUES (?,?,?,?,?,?,?)");
+  const old = { id: "fd-old1", severity: "blocking", text: "a.txt:1 x", raisedAt: at(10 * D) };
+  const fresh = { id: "fd-new1", severity: "should", text: "b.txt:1 y", raisedAt: at(D) };
+  // Raised 10 days ago, carried onto a commit inside the window; and one raised inside it, twice.
+  row.run(b.work, "aaaaaaa1", "feat", "codex", "findings", JSON.stringify([old]), at(10 * D));
+  row.run(b.work, "bbbbbbb2", "feat", "codex", "findings", JSON.stringify([old, fresh]), at(D));
+  row.run(b.work, "ccccccc3", "feat", "codex", "findings", JSON.stringify([old, { ...fresh, severity: "nit" }]), at(D / 2));
+  row.run(b.work, "ccccccc3", "feat", "kimi", "findings", JSON.stringify([{ id: "fd-kimi1", severity: "nit", text: "c", raisedAt: at(D) }]), at(D));
+  const dm = db.prepare("INSERT INTO cc_dismissals (id, finding_id, cwd, head_sha, lab, severity, text, disposition, reason, by, via, at) VALUES (?,?,?,?,?,?,?,?,?,?,'prompt-hook',?)");
+  dm.run("dm-1", "fd-new1", b.work, "ccccccc3", "codex", "should", "b.txt:1 y", "intentional", "kept on purpose", "Jo", at(D / 4));
+  dm.run("dm-2", "fd-old1", b.work, "ccccccc3", "codex", "blocking", "a.txt:1 x", "wrong", "not a bug", "Jo", at(D / 4));
+  dm.run("dm-3", "fd-gone", b.work, "aaaaaaa1", "codex", "should", "z", "wrong", "too old", "Jo", at(10 * D));
+  db.close();
+  const data = withStore(b, (s) => gather(s.db, { since: "7d" }));
+  assert.deepEqual(
+    data.findings.labs.map((l) => [l.lab, l.raised, l.bySeverity, l.dismissed, l.byDisposition]),
+    [
+      ["codex", 1, { should: 1 }, 2, { wrong: 1, intentional: 1, "doesnt-matter": 0 }],
+      ["kimi", 1, { nit: 1 }, 0, { wrong: 0, intentional: 0, "doesnt-matter": 0 }],
+    ],
+  );
+  const text = render(data);
+  assert.match(text, /^findings per lab:\n  codex raised 1 · dismissed 2 \(wrong 1, intentional 1, doesnt-matter 0\)\n  kimi raised 1 · dismissed 0 \(wrong 0, intentional 0, doesnt-matter 0\)$/m);
+  assert.match(text, /^dismissals: 2\n  \S+ ccccccc codex fd-(new|old)1 (intentional|wrong) · /m);
+  assert.match(text, /^reviews waived: 0$/m);
+});
