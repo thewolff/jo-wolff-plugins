@@ -197,3 +197,29 @@ test("report: a finding downgraded to a nit and raised again counts once as rais
     db.close();
   }
 });
+
+test("identity: a pre-0.4.12 finding re-listed on the same HEAD keeps its first round's raisedAt, and a report window that excludes that round does not count it as raised (REV-04)", async () => {
+  const { gather } = await import("../lib/report.mjs");
+  const b = repo();
+  const head = git(b, "rev-parse", "HEAD");
+  const legacyAt = new Date(Date.now() - 10 * 86400e3).toISOString();
+  const db = openDb(b);
+  try {
+    db.prepare("INSERT INTO cc_reviews (cwd, head_sha, base_ref, branch, lab, verdict, findings, findings_json, at) VALUES (?,?,?,?,?,?,?,?,?)").run(b.work, head, git(b, "rev-parse", "main"), "feat", "codex", "findings", "1. [blocking] b.txt:1 off by one", JSON.stringify([{ severity: "blocking", text: "b.txt:1 off by one" }]), legacyAt);
+  } finally {
+    db.close();
+  }
+  const codex = stub(b, "codex", "1. [blocking] b.txt:1 off by one");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: codex.path });
+  const d = openDb(b);
+  try {
+    const row = d.prepare("SELECT findings_json FROM cc_reviews WHERE lab = 'codex' ORDER BY id DESC LIMIT 1").get();
+    const [item] = JSON.parse(row.findings_json);
+    assert.match(item.id ?? "", /^fd-/);
+    assert.equal(item.raisedAt, legacyAt);
+    const lab = gather(d, { since: "7d" }).findings.labs.find((l) => l.lab === "codex");
+    assert.equal(lab?.raised ?? 0, 0);
+  } finally {
+    d.close();
+  }
+});
