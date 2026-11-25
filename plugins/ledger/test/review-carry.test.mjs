@@ -187,6 +187,20 @@ test("carry: a line reference inside a quoted span must resolve; a quoted extens
   assert.equal(citedPaths(b.work, head, head, ["`a.txt` uses `retry` here"]).ok, true, "a quoted identifier is not a path");
 });
 
+test("carry: an unquoted Unicode path and a quoted path with a space and the line number inside the quotes resolve whole; no fragment of either blocks (REV-03)", () => {
+  const b = mk({}, { "docs/café.md": "x\n", "src/my file.ts": "x\n", "lib/file.ts": "y\n" });
+  const head = git(b, "rev-parse", "HEAD");
+  assert.deepEqual(citedPaths(b.work, head, head, ["docs/café.md:1 the heading is wrong"]), { ok: true, paths: ["docs/café.md"] });
+  // A non-ASCII letter inside a word leaves an ASCII fragment (`ve.md`) that must not count on its own.
+  const n = mk({}, { "docs/naïve.md": "x\n" });
+  const nh = git(n, "rev-parse", "HEAD");
+  assert.deepEqual(citedPaths(n.work, nh, nh, ["docs/naïve.md:1 the heading is wrong"]), { ok: true, paths: ["docs/naïve.md"] });
+  assert.deepEqual(citedPaths(n.work, nh, nh, ["see docs/naïve.md for the heading"]), { ok: true, paths: ["docs/naïve.md"] });
+  assert.deepEqual(citedPaths(b.work, head, head, ["`src/my file.ts:10` the handler swallows errors"]), { ok: true, paths: ["src/my file.ts"] });
+  assert.deepEqual(citedPaths(b.work, head, head, ['"src/my file.ts:10" the handler swallows errors']), { ok: true, paths: ["src/my file.ts"] });
+  assert.equal(again(mk({}, { "src/my file.ts": "x\n", "lib/file.ts": "y\n" }), "1. [should] `src/my file.ts:10` the handler swallows errors").carried, true);
+});
+
 test("carry: an unquoted token with a tracked extension that resolves nowhere blocks the carry; a version number does not", () => {
   assert.equal(again(mk(), "1. [should] b.txt:1 and gone.txt disagree").carried, false);
   assert.equal(again(mk(), "1. [should] b.txt:1 breaks since 0.4.12").carried, true);
