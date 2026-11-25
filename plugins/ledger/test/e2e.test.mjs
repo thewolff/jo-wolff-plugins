@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { sandbox, cli, hook, openDb } from "./helpers.mjs";
+import { sandbox, cli, hook, openDb, typed } from "./helpers.mjs";
 
 const A = "s-e2e-a";
 const B = "s-e2e-b";
@@ -118,8 +118,8 @@ test("end to end: subfolder question → parent answers → delivery; push gate 
   assert.equal(decision(push()), "deny");
   assert.deepEqual(bounces().at(-1), [B, "reviewGate", null]);
 
-  // Waive: the next push is allowed and closes the open row.
-  assert.equal(run(B, ["review", "waive", "prototype, the human said ship it"]).code, 0);
+  // Waive, typed by the human as a prompt (0.4.12): the next push is allowed and closes the open row.
+  assert.match(typed(b, "review waive prototype, the human said ship it", { sessionId: B, env }).message, /waived the review gate for/);
   assert.equal(decision(push()), "allow");
   assert.deepEqual(bounces().map((x) => x[2]), ["satisfied", "satisfied", "satisfied"]);
 

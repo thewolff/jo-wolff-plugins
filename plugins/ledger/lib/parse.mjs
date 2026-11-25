@@ -389,7 +389,29 @@ export function parseLine(text, lookup = NULL_LOOKUP, tokens = null) {
   if (t0 === "review") {
     const usage = 'usage: review [--base <ref>] [--labs a,b] [--claudex <path>]… [--force-round] | review status | review addressed "<why>" | review waive "<why>" | review judge <key>';
     if (rest[0] === "status") return rest.length === 1 ? command(shown, { verb: "review", action: "status" }) : prose(shown, null, usage);
-    if (rest[0] === "addressed" || rest[0] === "waive") return command(shown, { verb: "review", action: rest[0], reason: rest.slice(1).join(" ").trim() });
+    if (rest[0] === "addressed") return command(shown, { verb: "review", action: "addressed", reason: rest.slice(1).join(" ").trim() });
+    // The human's two verbs (0.4.12): a malformed line is refused, never prose, so a prompt that
+    // holds one says why instead of passing it on to Claude as text.
+    if (rest[0] === "dismiss") {
+      const dismissUsage = 'usage: review dismiss <fd-id> wrong|intentional|doesnt-matter "<your reason>" (typed by the human as their whole prompt)';
+      if (rest.length < 3) return refused(shown, dismissUsage);
+      return command(shown, { verb: "review", action: "dismiss", findingId: rest[1], disposition: rest[2].toLowerCase(), reason: rest.slice(3).join(" ").trim() });
+    }
+    if (rest[0] === "waive") {
+      const waiveUsage = 'usage: review waive [--in <folder>] [--head <sha>] "<why>" (typed by the human as their whole prompt)';
+      const out = { verb: "review", action: "waive", in: null, head: null, reason: "" };
+      let i = 1;
+      for (; i < rest.length; i++) {
+        const a = rest[i];
+        const [flag, inline] = a.includes("=") ? [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] : [a, null];
+        if (flag !== "--in" && flag !== "--head") break;
+        const value = inline ?? rest[++i];
+        if (!value) return refused(shown, waiveUsage);
+        out[flag.slice(2)] = value;
+      }
+      out.reason = rest.slice(i).join(" ").trim();
+      return command(shown, out);
+    }
     if (rest[0] === "judge") return rest.length === 2 ? command(shown, { verb: "review", action: "judge", key: rest[1] }) : prose(shown, null, usage);
     const out = { verb: "review", action: "run", base: null, labs: null, forceRound: false, claudex: [] };
     for (let i = 0; i < rest.length; i++) {
@@ -473,7 +495,9 @@ export function promptApplicable(parsed) {
   // Owed work is the agent's to move: `drop ow-…` typed into a prompt applies nothing.
   if (OWED_VERBS.has(parsed.verb) && parsed.verb !== "hold") return false;
   if (parsed.id && prefixOf(parsed.id) === "ow") return false;
-  if (["config", "enable", "disable", "doctor", "review"].includes(parsed.verb)) return false;
+  // `review dismiss` and `review waive` are the human's, so a prompt is the one place they apply.
+  if (parsed.verb === "review") return parsed.action === "dismiss" || parsed.action === "waive";
+  if (["config", "enable", "disable", "doctor"].includes(parsed.verb)) return false;
   if (["pending", "log", "help", "bounces"].includes(parsed.verb)) return true;
   return Boolean(parsed.id) || parsed.ordinal !== undefined;
 }

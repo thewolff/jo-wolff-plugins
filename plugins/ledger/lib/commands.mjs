@@ -32,6 +32,8 @@ import { renderBounces, BOUNCES_DEFAULT_SINCE } from "./bounces.mjs";
 import { refreshBranches } from "./branches.mjs";
 import { logError } from "./failopen.mjs";
 import { createOwed, cut, moveOwed, owedByFolder, owedPendingLines, pendingItems, recordNothing, waitOwed } from "./owed.mjs";
+import { dismiss, waive } from "./review.mjs";
+import { invocation } from "./inject.mjs";
 
 const KINDS = ["question", "approval", "plan"];
 const KIND_DEFAULT_OPTIONS = { approval: ["approve", "deny"], plan: ["approve", "revise", "cancel"] };
@@ -412,8 +414,17 @@ export function execute(db, parsed, ctx) {
       }
       if (parsed.all) return ok(null, renderPendingAll(unresolvedByFolder(db), { now, timezone: tz }, owedByFolder(db)));
       return ok(null, [renderPending(openQuestions(db, ctx.cwd), ctx.cwd, { now, timezone: tz }, heldQuestions(db, ctx.cwd)), ...owedPendingLines(pendingItems(db, { cwd: ctx.cwd, sessionId: ctx.sessionId ?? null }), ctx.cwd)].join("\n"));
-    case "review":
-      return refused("review runs on its own line: `ledger review …`, not inside a batch");
+    case "review": {
+      // The human's two verbs apply from a typed prompt (each takes its own write transaction, so
+      // neither is wrapped in run(): transaction() does not nest). Every other review action runs alone.
+      if (parsed.action !== "dismiss" && parsed.action !== "waive") return refused("review runs on its own line: `ledger review …`, not inside a batch");
+      const common = { db, dbPath: ctx.dbPath, via: ctx.via, sessionId: ctx.sessionId ?? null, now: ctx.now };
+      const r =
+        parsed.action === "dismiss"
+          ? dismiss({ ...common, by: ctx.actor("review"), promptId: ctx.promptId ?? null, findingId: parsed.findingId, disposition: parsed.disposition, reason: parsed.reason, config: ctx.config, cli: invocation() })
+          : waive({ ...common, cwd: ctx.cwd, reason: parsed.reason, in: parsed.in, head: parsed.head });
+      return r.code === 0 ? ok(r.id ?? null, r.text) : refused(r.text.replace(/^refused /, ""));
+    }
     case "canary":
     case "report":
     case "digest":

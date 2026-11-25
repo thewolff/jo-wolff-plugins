@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { sandbox, cli, hook, openDb } from "./helpers.mjs";
+import { sandbox, cli, hook, openDb, typed } from "./helpers.mjs";
 import { PRECOMPACT_TEXT_MAX, WRITE_TRACKER, spawnHook, trackedWrites, checkPlugin, docsCheck, dryRunPrune, evalsCheck, retentionCheck, fixturesWithoutUnavailable, hookCommands, reasonsWithoutCommand, releaseEntry, rootReadmeNames, treePlugins, treeSha, snapshotTree, textsWithoutWhenCant, changedPlugins, CHECKS, FAULT_INPUTS } from "../lib/plugin-gate.mjs";
 
 const SID = "s-gate";
@@ -706,7 +706,7 @@ test("PreToolUse: the three gates deny together as one numbered list; `review wa
   const fresh = hook(b, "pre-tool-use", { session_id: "s-other", cwd: b.work, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git push origin feat" } });
   assert.equal(decision(fresh), "deny");
   assert.match(reason(fresh), /^ledger: this push needs 3 things first, and all are missing:\n1\. record what this push is[^\n]*\n2\. [^\n]*\n3\. plugin gate: good has no check rows/);
-  cli(b, ["review", "waive", "not shipping hooks"], { env: { LEDGER_SESSION_ID: SID } });
+  assert.match(typed(b, "review waive not shipping hooks").message, /waived the review gate for/);
   const waived = push(b);
   assert.equal(decision(waived), "allow", waived.out);
   // Advise mode on another repository: the deny becomes a notice.
@@ -727,7 +727,7 @@ test("PreToolUse: a push from a repository that holds no plugin never sees the p
   commitAll(b, "b");
   b.writeConfig({ review: { mode: "gate" } });
   cli(b, ["note", "pushing"], { env: { LEDGER_SESSION_ID: SID } });
-  cli(b, ["review", "waive", "plain repo"], { env: { LEDGER_SESSION_ID: SID } });
+  assert.match(typed(b, "review waive plain repo").message, /waived the review gate for/);
   const r = push(b);
   assert.equal(decision(r), "allow", r.out);
   const db = openDb(b);

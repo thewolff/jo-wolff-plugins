@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { sandbox, cli, hook, openDb } from "./helpers.mjs";
+import { sandbox, cli, hook, openDb, typed } from "./helpers.mjs";
 import { ask, askWord, judgeCommand, JUDGE_TIMEOUT_MS } from "../lib/ledger-judge.mjs";
 
 const SID = "s-review";
@@ -164,11 +164,11 @@ test("review (d): a failing or missing lab → unavailable row with the error; t
 
 test("review (e): waive needs a reason; with one, the gate allows and the reason is recorded", () => {
   const b = repo();
-  const bare = review(b, ["waive"]);
-  assert.equal(bare.code, 1);
-  assert.match(bare.out, /^refused review waive needs the reason/);
+  // 0.4.12: waive is typed by the human as a prompt; the CLI refuses it (review-waive-lock.test.mjs).
+  const bare = typed(b, "review waive");
+  assert.match(bare.message, /^1: refused review waive needs the reason/m);
   assert.equal(decision(push(b)), "deny", "no row yet");
-  assert.equal(review(b, ["waive", "prototyping, Jo said push it"]).code, 0);
+  assert.match(typed(b, "review waive prototyping, Jo said push it").message, /waived the review gate for/);
   assert.equal(push(b).out, "");
   assert.deepEqual(reviews(b).map((x) => [x.lab, x.verdict, x.reason]), [["ledger", "waived", "prototyping, Jo said push it"]]);
   assert.deepEqual(reviewBounces(b), ["satisfied"], "the earlier deny is satisfied by the allowed push");
@@ -1074,7 +1074,7 @@ test("0.3.11: a literal absolute cd with hyphens resolves: reviewed HEAD allows,
   const env = { ...b.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
   assert.equal(spawnSync("git", ["commit", "-q", "--allow-empty", "-m", "two"], { cwd: dir, env }).status, 0);
   assert.equal(decision(push(b, cmd)), "deny", "a new HEAD has no review");
-  assert.equal(cli(b, ["review", "waive", "prototype, Jo said push it"], { cwd: dir, env: { LEDGER_SESSION_ID: SID } }).code, 0);
+  assert.match(typed(b, "review waive prototype, Jo said push it", { cwd: dir }).message, /waived the review gate for/);
   assert.equal(push(b, cmd).out, "", "waived HEAD");
 });
 
