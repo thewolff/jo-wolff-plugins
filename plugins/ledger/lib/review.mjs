@@ -658,10 +658,16 @@ function firstAt(rounds, lab, sha) {
   return ats[0] ?? null;
 }
 
-/** A new id and raisedAt for an item that has none: a legacy item's raisedAt is its first round's. */
-function freshId(item, { rounds, lab, head, at }) {
-  const since = item.since && item.since !== head ? firstAt(rounds, lab, item.since) : null;
-  return { ...item, id: newId("fd"), raisedAt: since ?? at };
+/**
+ * A new id and raisedAt for an item that has none. A legacy item (read from a stored row on
+ * `stored`) takes the earliest lab-row time on its `since` commit (else that row's commit), even
+ * when that commit is HEAD (REV-04: a legacy finding re-listed on the same HEAD is not new). A new
+ * reply item (`stored` null) takes its first round's time only when `since` is an earlier commit.
+ */
+function freshId(item, { rounds, lab, head, at }, stored = null) {
+  const sha = stored ? (item.since ?? stored) : item.since && item.since !== head ? item.since : null;
+  const first = sha ? firstAt(rounds, lab, sha) : null;
+  return { ...item, id: newId("fd"), raisedAt: first ?? at };
 }
 
 /**
@@ -686,7 +692,7 @@ function matchOwed(items, before, ctx, tag = (it) => it) {
     const prev = prevs[i];
     const tagged = tag(it, prev);
     if (!prev) return tagged;
-    const o = prev.id ? prev : freshId(prev, ctx);
+    const o = prev.id ? prev : freshId(prev, ctx, before.row.head_sha);
     return { ...tagged, id: o.id, raisedAt: o.raisedAt };
   });
   return { items: out, repeated };
@@ -701,7 +707,7 @@ function matchOwed(items, before, ctx, tag = (it) => it) {
  * still without an id gets a new one. Returns the row's final items: the reply items, then the
  * judged items that remain.
  */
-export function assignIds(items, { rounds, lab, head, at, history = [], judged = [] }) {
+export function assignIds(items, { rounds, lab, head, at, history = [], judged = [], stored = null, replyStored = false }) {
   const ctx = { rounds, lab, head, at };
   const reply = [...items];
   let rest = [...judged];
@@ -725,7 +731,9 @@ export function assignIds(items, { rounds, lab, head, at, history = [], judged =
     reply[i] = { ...reply[i], id: match.id, raisedAt: match.raisedAt ?? at, ...(folded ? { judgedFrom: { severity: folded.severity, judge: folded.judge } } : {}) };
     if (folded) rest = rest.filter((x) => x !== folded);
   }
-  return [...reply, ...rest].map((it) => (it.id ? it : freshId(it, ctx)));
+  // `stored` is the commit of the row the judged items (and, with `replyStored`, the items given)
+  // were read from: those are legacy items, dated from their first round.
+  return [...reply.map((it) => (it.id ? it : freshId(it, ctx, replyStored ? stored : null))), ...rest.map((it) => (it.id ? it : freshId(it, ctx, stored)))];
 }
 
 /**
@@ -1293,7 +1301,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
     if (r.verdict === "unavailable") {
       if (before) {
         const c = carried(before, `unavailable (${r.reason}); its findings from round ${before.round} stay open`);
-        record(lab, { ...c, items: assignIds(c.items, ids), carried: true, at });
+        record(lab, { ...c, items: assignIds(c.items, { ...ids, stored: before.row.head_sha, replyStored: true }), carried: true, at });
       } else record(lab, { ...r, at });
       continue;
     }
@@ -1315,7 +1323,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
       judged.push(...(await judgeItems({ db, dbPath, config, env, top, fromSha: before.row.head_sha, toSha: head, items: dropped, receipt: receipt.text, receiptSha, receiptUnreadable: Boolean(receipt.unreadable) })));
     }
     const noted = judged.map((it) => (it.judge === "no" ? { ...it, note: `from round ${before.round}; the judge says it is not resolved` } : it));
-    const items = assignIds(r.items ?? [], { ...ids, history: identityHistory(rounds, lab), judged: noted });
+    const items = assignIds(r.items ?? [], { ...ids, history: identityHistory(rounds, lab), judged: noted, stored: before?.row.head_sha ?? null });
     if (dropped.length) r = { ...r, items, verdict: verdictOf(items) };
     else r = { ...r, items };
     record(lab, { ...r, at }, judged, before?.round);
@@ -1324,7 +1332,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
     if (list.includes(lab)) continue;
     const at = nowIso(now());
     const c = carried(entry, `not run this time; its findings from round ${entry.round} stay open`);
-    record(lab, { ...c, items: assignIds(c.items, { rounds, lab, head, at }), carried: true, at });
+    record(lab, { ...c, items: assignIds(c.items, { rounds, lab, head, at, stored: entry.row.head_sha, replyStored: true }), carried: true, at });
   }
   if (anyFindings) {
     out.push(
@@ -1556,7 +1564,7 @@ export async function addressed({ db, dbPath, cwd, reason, config = {}, env = pr
         verdict: "findings",
         // A legacy item (before 0.4.12) gets its id and its first round's raisedAt here, so the
         // human can dismiss it; an item that has an id keeps it.
-        items: assignIds(items, { rounds, lab: row.lab, head, at }),
+        items: assignIds(items, { rounds, lab: row.lab, head, at, stored: row.head_sha, replyStored: true }),
         reason: `addressed claimed: ${why}; the judge said no`,
         at,
       });
