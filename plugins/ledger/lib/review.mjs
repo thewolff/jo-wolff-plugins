@@ -1302,7 +1302,16 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
     for (const it of judged) out.push(`  judge ${it.judge}: ${itemLine(it)} (round ${fromRound})`);
     for (const it of r.items ?? []) if (it.dismissed && it.dismissed.sha !== head) out.push(`  dismissed carried: ${it.id} (${lab}, ${it.dismissed.disposition}, from ${short(it.dismissed.sha)})`);
     out.push(...carry.lines);
-    for (const d of lateDismissals(db, top, lab, head, r.items ?? [], carry.seen)) out.push(`  ${lab} ${d.finding_id}: a dismissal at ${short(d.head_sha)} was recorded while this review ran; it stays open until the next review`);
+    // The lab row is committed. This read only reports dismissals that came too late for it; they
+    // were not applied to the stored row, so a failed read leaves those findings open (the stored
+    // verdict stands) and says so instead of throwing after the write.
+    let late = [];
+    try {
+      late = lateDismissals(db, top, lab, head, r.items ?? [], carry.seen);
+    } catch (err) {
+      out.push(`  ${lab}: late dismissals could not be read (${err?.message ?? err}); any dismissal recorded while this review ran stays open until the next review; run review status`);
+    }
+    for (const d of late) out.push(`  ${lab} ${d.finding_id}: a dismissal at ${short(d.head_sha)} was recorded while this review ran; it stays open until the next review`);
   };
   for (let i = 0; i < list.length; i++) {
     const lab = list[i];
