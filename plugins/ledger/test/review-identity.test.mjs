@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { openDb } from "./helpers.mjs";
-import { repo, git, commit, stub, review, push, denyText, reviewRows, judge, judgeCalls } from "./review-helpers.mjs";
+import { repo, git, commit, stub, review, push, denyText, reviewRows, judge, judgeCalls, typed, dismissals } from "./review-helpers.mjs";
 import { branchRounds, defaultBase, outstanding } from "../lib/review.mjs";
 
 const FD = /^fd-[a-z0-9]+$/;
@@ -162,4 +162,18 @@ test("ids appear in review output, review status and the deny text", () => {
   assert.ok(r.out.includes(line), r.out);
   assert.ok(review(b, ["status"]).out.includes(line));
   assert.ok(denyText(push(b)).includes(line));
+});
+
+test("identity: dismissed finding repeated after an unrelated commit keeps its id and raisedAt, and the dismissal is retained with no new cc_dismissals row", () => {
+  const b = repo();
+  const codex = stub(b, "codex", "1. [blocking] a.txt:1 off by one");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: codex.path });
+  const [orig] = labRows(b)[0].items;
+  assert.match(typed(b, `review dismiss ${orig.id} intentional kept on purpose`).message, /ok dismissed /);
+  commit(b, "c.txt", "unrelated\n");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: codex.path });
+  const [again] = labRows(b).at(-1).items;
+  assert.deepEqual([again.id, again.raisedAt, again.dismissed?.disposition], [orig.id, orig.raisedAt, "intentional"]);
+  assert.equal(dismissals(b).length, 1);
+  noDuplicateIds(b);
 });

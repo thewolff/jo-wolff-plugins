@@ -322,6 +322,55 @@ function publishLabRowTx(db, row, { eligible = new Set() } = {}) {
   return { ...settled, id };
 }
 
+/** The newest cc_dismissals row per finding for `lab`'s open ids, on a sha other than `head`. */
+function ancestorDismissals(db, top, lab, head, items) {
+  const ids = items.filter((i) => i.id && !i.resolved).map((i) => i.id);
+  if (!ids.length) return [];
+  const rows = db
+    .prepare(`SELECT * FROM cc_dismissals WHERE cwd = ? AND lab = ? AND head_sha <> ? AND finding_id IN (${ids.map(() => "?").join(",")}) ORDER BY at, rowid`)
+    .all(top, lab, head, ...ids);
+  const newest = new Map();
+  for (const d of rows) newest.set(d.finding_id, d);
+  return [...newest.values()];
+}
+
+function isAncestorSha(top, a, b) {
+  try {
+    git(top, ["merge-base", "--is-ancestor", a, b]);
+    return true;
+  } catch (err) {
+    if (err.gitStatus === 1) return false;
+    return null;
+  }
+}
+
+/**
+ * Which ancestor dismissals carry to this row's items (plan 2.5), checked before the write
+ * transaction so git never runs under the lock: { eligible: Set<dm-id>, lines, seen: Set<dm-id> }.
+ * A dismissal on a commit that is not an ancestor of HEAD does not apply and says nothing; one
+ * that fails the carry test leaves the finding open with a line saying why.
+ */
+function carriedDismissals(db, top, lab, head, items) {
+  const eligible = new Set();
+  const seen = new Set();
+  const lines = [];
+  for (const d of ancestorDismissals(db, top, lab, head, items)) {
+    seen.add(d.id);
+    const item = items.find((i) => i.id === d.finding_id);
+    const ancestor = isAncestorSha(top, d.head_sha, head);
+    if (ancestor === false) continue;
+    const r = ancestor === null ? { ok: false, why: "could not be checked (git failed)" } : citedPaths(top, d.head_sha, head, [d.text, item.text]);
+    if (r.ok) eligible.add(d.id);
+    else lines.push(`  ${lab} raised ${d.finding_id} again (dismissed at ${short(d.head_sha)} as ${d.disposition}); ${r.why}, so it is open again`);
+  }
+  return { eligible, lines, seen };
+}
+
+/** Ancestor dismissals of the stored row's open items that were recorded after the carry check ran. */
+function lateDismissals(db, top, lab, head, items, seen) {
+  return ancestorDismissals(db, top, lab, head, items).filter((d) => !seen.has(d.id));
+}
+
 /**
  * Publish one lab row: every writer of a lab row (a review's record, the carried rows, the rows
  * `addressed` writes, a dismissal's superseding row) goes through here, so a dismissal committed
@@ -383,6 +432,116 @@ const openSerious = (items) => items.filter((i) => !i.resolved && (i.severity ==
 /** File paths a finding names (`dir/file.ext`, optionally with `:line`). */
 export function namedFiles(text) {
   return [...new Set([...String(text).matchAll(/([A-Za-z0-9_.\/-]+\.[A-Za-z0-9]+)(?::\d+)?/g)].map((m) => m[1].replace(/^\.\//, "")))];
+}
+
+const QUOTES = { "`": "`", '"': '"', "'": "'" };
+const LINE_REF = /:(\d+)(?:-\d+)?/g;
+const extOf = (p) => (/\.([A-Za-z0-9]+)$/.exec(p.split("/").pop() ?? "") ?? [])[1] ?? null;
+
+/** The quoted spans of `text`: [{ value, start, end }], `end` just past the closing quote. */
+function quotedSpans(text) {
+  const out = [];
+  for (let i = 0; i < text.length; i++) {
+    const close = QUOTES[text[i]];
+    if (!close) continue;
+    const j = text.indexOf(close, i + 1);
+    if (j < 0) break;
+    out.push({ value: text.slice(i + 1, j), start: i, end: j + 1 });
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * Whether a dismissal on `fromSha` carries to the same finding raised again on `toSha` (0.4.12,
+ * plan 2.5): every path the findings cite must resolve to exactly one tracked path, and none of
+ * those paths may have changed or been renamed since. The rule leans toward reopening; any git
+ * failure reopens. Returns { ok: true, paths } or { ok: false, why }.
+ */
+export function citedPaths(top, fromSha, toSha, texts) {
+  const tracked = new Map(); // NFC path → the path as git spells it
+  try {
+    for (const sha of [fromSha, toSha]) for (const p of git(top, ["ls-tree", "-r", "-z", "--name-only", sha]).split("\0").filter(Boolean)) tracked.set(p.normalize("NFC"), p);
+  } catch {
+    return { ok: false, why: "could not be checked (git failed)" };
+  }
+  const paths = [...tracked.keys()];
+  const exts = new Set(paths.map(extOf).filter(Boolean));
+  const basenames = new Set(paths.map((p) => p.split("/").pop()).filter((b) => !b.includes(".")));
+  const resolve = (c) => {
+    if (tracked.has(c)) return { path: c };
+    const hits = paths.filter((p) => p.endsWith(`/${c}`));
+    return hits.length === 1 ? { path: hits[0] } : hits.length ? { ambiguous: true } : { unresolved: true };
+  };
+  const resolved = new Set();
+  let blocked = null;
+  const block = (why) => {
+    blocked ??= why;
+  };
+  for (const raw of texts) {
+    const text = String(raw ?? "").normalize("NFC");
+    const candidates = []; // { value, strict, quoted }
+    const spans = quotedSpans(text);
+    for (const s of spans) if (/[/.]/.test(s.value)) candidates.push({ value: s.value.replace(/:\d+(?:-\d+)?$/, ""), strict: true, quoted: true });
+    // Every `X:N`: X runs back to a quote, parenthesis, whitespace or the start; a line number right
+    // after a closing quote belongs to that quoted span.
+    const lineRefsOk = [];
+    for (const m of text.matchAll(LINE_REF)) {
+      const k = m.index;
+      const span = spans.find((s) => s.end === k);
+      if (span) {
+        lineRefsOk.push(/[/.]/.test(span.value) ? span.value.replace(/:\d+(?:-\d+)?$/, "") : null);
+        continue;
+      }
+      if (spans.some((s) => k > s.start && k < s.end)) continue; // inside a quoted span: the span is the candidate
+      let x = k;
+      while (x > 0 && !/[\s`"'(]/.test(text[x - 1])) x--;
+      const value = text.slice(x, k).replace(/^\.\//, "");
+      if (value) candidates.push({ value, strict: true, quoted: false });
+      lineRefsOk.push(value || null);
+    }
+    const unquoted = spans.reduceRight((t, s) => t.slice(0, s.start) + " ".repeat(s.end - s.start) + t.slice(s.end), text);
+    for (const f of namedFiles(unquoted)) candidates.push({ value: f, strict: f.includes("/") || exts.has(extOf(f)), quoted: false });
+    for (const tok of unquoted.split(/\s+/)) {
+      const t = tok.replace(/^[(\[{<]+/, "").replace(/[)\]}>.,;:!?]+$/, "").replace(/:\d+(?:-\d+)?$/, "");
+      if (!t) continue;
+      if (t.includes("/") || tracked.has(t) || basenames.has(t)) candidates.push({ value: t.replace(/^\.\//, ""), strict: t.includes("/") || exts.has(extOf(t)), quoted: false });
+    }
+    const resolvedHere = new Set();
+    for (const c of candidates) {
+      const r = resolve(c.value);
+      if (r.path) {
+        resolved.add(r.path);
+        resolvedHere.add(c.value);
+      } else if (r.ambiguous) block("cites an ambiguous path");
+      else if (c.quoted || c.strict) block("cites a path that does not resolve");
+    }
+    // Orphans: a line number on no resolved path, and a tracked path with a space or a non-ASCII
+    // character whose basename the text names while the whole path did not resolve.
+    if (lineRefsOk.some((v) => !v || !resolvedHere.has(v))) block("cites a line number on no path that resolves");
+    for (const p of paths) {
+      if (!/[\s\u0080-￿]/.test(p) || resolved.has(p)) continue;
+      if (text.includes(p.split("/").pop())) block("cites a path that does not resolve");
+    }
+  }
+  if (blocked) return { ok: false, why: blocked };
+  if (!resolved.size) return { ok: false, why: "cites no path that resolves" };
+  const gitPaths = [...resolved].map((p) => tracked.get(p));
+  try {
+    const f = git(top, ["diff", "--name-status", "-z", "-M", "--no-ext-diff", fromSha, toSha]).split("\0");
+    for (let i = 0; i < f.length; ) {
+      const st = f[i] ?? "";
+      if (/^[RC]/.test(st)) {
+        if (st.startsWith("R") && (gitPaths.includes(f[i + 1]) || gitPaths.includes(f[i + 2]))) return { ok: false, why: `cites ${f[i + 1]}, which was renamed` };
+        i += 3;
+      } else i += st ? 2 : 1;
+    }
+    const changed = git(top, ["diff", "--name-only", "-z", "--no-ext-diff", fromSha, toSha, "--", ...gitPaths.map((p) => `:(literal)${p}`)]).split("\0").filter(Boolean);
+    if (changed.length) return { ok: false, why: `${changed[0]} changed since` };
+  } catch {
+    return { ok: false, why: "could not be checked (git failed)" };
+  }
+  return { ok: true, paths: gitPaths };
 }
 
 const words = (t) => new Set(String(t).toLowerCase().match(/[a-z0-9]+/g) ?? []);
@@ -985,7 +1144,7 @@ async function judgeItems({ db, dbPath, config, env, top, fromSha, toSha, items,
 }
 
 /** The verdict for a set of items: findings when any open blocking/should, pass-with-nits when only open nits, else pass. */
-function verdictOf(items) {
+export function verdictOf(items) {
   const open = items.filter((i) => !i.resolved);
   if (open.some((i) => i.severity !== "nit")) return "findings";
   return open.length ? "pass-with-nits" : "pass";
@@ -1061,7 +1220,10 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
   const out = [`review of ${short(head)} (${range}) in ${top}, round ${round} of ${max}${round > max ? " (forced)" : ""}:`];
   let anyFindings = false;
   const record = (lab, given, judged = [], fromRound = null) => {
-    const stored = publishLabRow(db, dbPath, { sessionId, cwd: top, head, base: branchBase ?? ROOT_BASE, branch, lab, model: given.model, verdict: given.verdict, findings: given.findings, items: given.items, reason: given.reason ?? null, at: given.at ?? nowIso(now()) });
+    // Dismissals on an ancestor commit that the carry test lets through (git runs here, outside
+    // the write lock); one on HEAD's own sha is applied by publishLabRow under the lock.
+    const carry = carriedDismissals(db, top, lab, head, given.items ?? []);
+    const stored = publishLabRow(db, dbPath, { sessionId, cwd: top, head, base: branchBase ?? ROOT_BASE, branch, lab, model: given.model, verdict: given.verdict, findings: given.findings, items: given.items, reason: given.reason ?? null, at: given.at ?? nowIso(now()) }, { eligible: carry.eligible });
     const r = { ...stored, carried: given.carried };
     const model = r.model ? ` (${r.model})` : "";
     if (r.verdict === "findings") {
@@ -1071,6 +1233,9 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
     else if (r.verdict === "unavailable") out.push(`${lab}: unavailable: ${r.reason}`);
     else out.push(`${lab}: pass${model}${r.reason ? ` · ${r.reason}` : ""}`);
     for (const it of judged) out.push(`  judge ${it.judge}: ${itemLine(it)} (round ${fromRound})`);
+    for (const it of r.items ?? []) if (it.dismissed && it.dismissed.sha !== head) out.push(`  dismissed carried: ${it.id} (${lab}, ${it.dismissed.disposition}, from ${short(it.dismissed.sha)})`);
+    out.push(...carry.lines);
+    for (const d of lateDismissals(db, top, lab, head, r.items ?? [], carry.seen)) out.push(`  ${lab} ${d.finding_id}: a dismissal at ${short(d.head_sha)} was recorded while this review ran; it stays open until the next review`);
   };
   for (let i = 0; i < list.length; i++) {
     const lab = list[i];
@@ -1125,7 +1290,7 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
   if (anyFindings) {
     out.push(
       round < max
-        ? `next: fix the blocking and should findings, commit, and run \`${cli} review\` again (round ${round + 1} of ${max}).`
+        ? `next: fix the blocking and should findings, commit, and run \`${cli} review\` again (round ${round + 1} of ${max}); a finding that is wrong, intentional or does not matter: ask the human to type its review dismiss line (review status lists them).`
         : `round ${round} of ${max} reached: ask the human whether to waive (\`${cli} review waive "<why>"\`) or continue with \`${cli} review --force-round\`.`,
     );
   }
@@ -1379,6 +1544,11 @@ export function headState(db, top, head) {
 const unavailableText = (rows) => rows.map((r) => `${r.lab} unavailable: ${r.reason}`).join("; ");
 const grouped = (rows) => rows.map((r) => `${r.lab}${r.model ? ` (${r.model})` : ""}:\n${r.findings}`).join("\n\n");
 
+/** One paste-ready dismiss line per open blocking or should finding with an id in `rows`, from the same stored items as their findings text. */
+export function dismissLines(rows) {
+  return rows.flatMap((r) => openSerious(rowItems(r)).filter((i) => i.id).map((i) => `review dismiss ${i.id} ${DISPOSITIONS.join("|")} "<your reason>"`));
+}
+
 /**
  * The gate's answer for `state` under `mode`: { deny: reason } | { notice: line } | {} (silent allow).
  */
@@ -1389,7 +1559,9 @@ export function gateDecision(state, mode, cli = "ledger") {
   if (state.kind === "waived") return {};
   if (state.kind === "addressed") return unverifiedText ? { notice: `ledger: review addressed for ${sha}; ${unverifiedText}` } : {};
   if (state.kind === "findings") {
-    const msg = `ledger: the cross-lab review found problems in ${sha}. Fix the blocking and should findings, commit, and run \`${cli} review\` again; to override a finding that does not apply, \`${cli} review addressed "<why>"\` after committing; if the human wants to push anyway, record their words with \`${cli} review waive "<their reason>"\`.\n\n${grouped(state.findings)}`;
+    let msg = `ledger: the cross-lab review found problems in ${sha}. Fix the blocking and should findings, commit, and run \`${cli} review\` again; to override a finding that does not apply, \`${cli} review addressed "<why>"\` after committing; if the human wants to push anyway, record their words with \`${cli} review waive "<their reason>"\`.\n\n${grouped(state.findings)}`;
+    const lines = dismissLines(state.findings);
+    if (lines.length) msg += `\n\nto dismiss a finding that is wrong, intentional or does not matter, ask the human to type one of these as their whole prompt, with their own reason:\n${lines.join("\n")}`;
     return mode === "gate" ? { deny: msg } : { notice: msg };
   }
   if (state.kind === "none") {
@@ -1469,10 +1641,25 @@ export function status({ db, cwd, config, cli = "ledger" }) {
   }
   if (!state.rows.length) out.push(`no review rows for ${short(head)}; run \`${cli} review\``);
   else out.push(`rows for ${short(head)}:`);
+  // A row that is not the latest for its lab is marked, so a finding dismissed in a newer row is
+  // not read as open in an older one (0.4.12).
+  const latestIds = new Set(state.labRows.map((r) => r.id));
   for (const r of state.rows) {
-    out.push(`${r.at}  ${r.lab.padEnd(7)} ${r.verdict}${r.model ? ` (${r.model})` : ""}${r.reason ? ` · ${r.reason}` : ""}`);
+    const superseded = r.lab !== META_LAB && !latestIds.has(r.id) ? " (superseded)" : "";
+    out.push(`${r.at}  ${r.lab.padEnd(7)} ${r.verdict}${r.model ? ` (${r.model})` : ""}${r.reason ? ` · ${r.reason}` : ""}${superseded}`);
     if (r.findings) out.push(indent(r.findings));
   }
+  const dismissed = state.labRows.flatMap((r) => rowItems(r).filter((i) => i.dismissed).map((i) => ({ lab: r.lab, item: i })));
+  if (dismissed.length) {
+    out.push(`dismissals that apply to ${short(head)}:`);
+    const reasonOf = db.prepare("SELECT reason FROM cc_dismissals WHERE id = ?");
+    for (const { lab, item } of dismissed) {
+      const d = item.dismissed;
+      out.push(`  ${item.id} (${lab}, ${d.disposition}, by ${d.by}, at ${short(d.sha)}): ${reasonOf.get(d.id)?.reason ?? ""}`);
+    }
+  }
+  const lines = dismissLines(state.labRows);
+  if (lines.length) out.push("to dismiss a finding that is wrong, intentional or does not matter, the human types its line as their whole prompt, with their own reason:", ...lines.map((l) => `  ${l}`));
   return { code: 0, text: out.join("\n") };
 }
 

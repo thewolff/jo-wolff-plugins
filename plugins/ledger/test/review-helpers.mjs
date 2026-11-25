@@ -47,6 +47,10 @@ export function stub(b, name, reply, code = 0) {
   return { path, set };
 }
 
+// kimi replies in stream-json: a meta line, then the reply as one assistant message (as review.test.mjs's stub).
+const KIMI_META = '{"role":"meta","type":"system.version","version":"2.1.1"}';
+export const kimiStub = (b, reply) => stub(b, "kimi", [KIMI_META, JSON.stringify({ role: "assistant", content: reply })].join("\n"));
+
 export const review = (b, args = [], env = {}) => cli(b, ["review", ...args], { env: { LEDGER_SESSION_ID: SID, ...env } });
 export const push = (b, command = "git push origin feat", env = {}) =>
   hook(b, "pre-tool-use", { session_id: SID, cwd: b.work, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } }, { env });

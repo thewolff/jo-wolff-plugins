@@ -316,7 +316,7 @@ test("review loop: findings → fix → pass over two shas; status shows rounds 
   const first = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "1. [blocking] a.txt:1 wrong value\n2. [nit] b.txt:1 style") });
   assert.match(first.out, /round 1 of 3:/);
   assert.match(first.out, /^codex: findings: 1 blocking, 0 should, 1 nit$/m);
-  assert.match(first.out, /^next: fix the blocking and should findings, commit, and run `.*review` again \(round 2 of 3\)\.$/m);
+  assert.match(first.out, /^next: fix the blocking and should findings, commit, and run `.*review` again \(round 2 of 3\); a finding that is wrong, intentional or does not matter: ask the human to type its review dismiss line \(review status lists them\)\.$/m);
   commit(b, "a.txt", "fixed\n");
   const second = review(b, [], { LEDGER_REVIEW_BIN_CODEX: stub(b, "codex", "PASS"), LEDGER_JUDGE_BIN: judge(b, "yes") });
   assert.match(second.out, /round 2 of 3:/);
