@@ -219,7 +219,7 @@ session's folder and dated after the session started.
 | PostToolUse, PostToolUseFailure | `hooks.postToolUse` | Runs on `Bash` only, after the command: a failed line still reaches it, because `git commit … && npm test` can commit and then fail. The command text is matched for `git` and `commit` before anything else, so any other command costs one regular expression. For each folder the line commits in (`cd`, `pushd` and `git -C` followed in their shell scope; a folder that is an expansion, `~`, a glob or `cd -`, and `--git-dir` / `--work-tree`, are left out), it reads the branches the line committed to (printed headers, then the HEAD reflog) and records or updates their owed items (see [What is forced](#what-is-forced), item 7). Prints nothing. A git fault (git missing, a timeout) is one `errors.log` line and nothing recorded for that folder. Inspection stops 7 seconds in (the hook's timeout is 10): folders not reached are one `errors.log` line naming them, and the branches already inspected are recorded. A store that cannot be opened is one `systemMessage`. Rows made inside a subagent are marked `ledger-branches (subagent <type>)`. |
 | Stop | `hooks.stop` | Checks the final message once per turn (keyed on `prompt_id`; a second Stop in the same turn passes). Answer rule (`forcing.stopAskRule`): the Stop's `prompt_id` differs from the one stamped by the session's previous Stop, the transcript shows a prompt you typed since that Stop (a task-notification, system-reminder or other injected line does not count; a missing or unreadable transcript, or one with no timestamped prompt, is no evidence and never nags), brb does not hold the session, and the session has open questions asked at or before that previous Stop → `{"decision":"block","reason":…}` listing them newest first and telling the agent to take the answer from your latest message and run `answer <q-id> <option>` (or `withdraw`); it clears once every such question is answered or withdrawn. Ask rule (same switch): after removing code blocks, inline code and double-quoted spans, a sentence ends with `?` (a `?` at the end of a line or followed by a space, so "Should I …? I'd say yes." counts and a URL's `?query` does not) and that sentence asks for a decision: a permission or decision request on the agent (a modal on I/we: "should I", "shall we", "can I push?", "may I"; "want me to", "do you want", "would you like"), a confirmation ("is this right", "does that look right", "is it safe to", "ok to", "ready to"), an explicit choice ("would you prefer", "which option should we", an option list after a comma or colon, a sentence that is only options such as "Alpha or beta?", or a choice about the thing being configured: "Should the helper use local or remote storage?"), or a wh-question (what/where/when/who/which/how) carrying a modal on I/we, "whether", a preference or an option list ("How should we proceed?", "Which option should we use?"). A "why" question never counts, and neither do a bare "which", a loose "or", "do we know/have …", or "whether"/"proceed" inside a question about recorded facts: "Which file holds the config?", "Are the logs compressed or uncompressed?", "Does the log say whether the build failed?", "Did the deployment proceed without errors?" and "What are we working on?" are requests for information and need no row. It is a heuristic with a once-per-turn escape: an information request worded as a request ("Should the parser be deciding this?") bounces once and no question is open for the folder (this session's, or one open in the cwd or a parent of it, whoever asked it) and the reply does not repeat the body of a question open in another folder (relaying one of those to the human, as SessionStart asks, is not asking a new question) → block telling the agent to `ask` first, then ask in plain words; messages under 40 substantive characters are not checked. Neither rule reads ids out of the reply. A session's questions are those tagged with its id, plus untagged ones asked in or around its folder after it started. Decision rule (`forcing.stopDecisionRule`): after also removing double-quoted spans, the message contains one of `forcing.decisionPhrases` as whole words, the session recorded no `note` during this turn, and it asked no question during this turn (the stated default of a question just asked is not a decision) → block telling the agent to `note`, then finish. Checked in the order answer, ask, decision. Every Stop stamps `cc_sessions.last_stop_at` and `last_stop_prompt`; "this turn" runs from the previous stamp (or the session start) to now. Then, in a second once-per-prompt slot (`cc_sessions.last_owed_block_prompt`) that also runs when the first is spent or another hook's continuation set `stop_hook_active`: owed rule (`forcing.stopOwedRule`): the session owns owed work no open or held question waits on → block listing it (`ledger: work the human approved is still owed, and this turn is ending without it started:`) with the `start`, `hold` and `drop` commands; offer rule (`forcing.stopOfferRule`): a sentence of the final message offers to do work and no candidate question covers it (see [What is forced](#what-is-forced), item 6) → block listing the sentences and the `ask … --kind approval --about "<sentence>"` command. When both fire, one block carries both reasons. Neither runs without a session id and a `prompt_id`. A Stop that passes lists, in its `systemMessage`, the session's owed-work moves not yet shown (at most 8 lines; the rest show at a later Stop) and, once the slot is spent, `ledger: still owed after one reminder, and the turn ended: <body>` for each item still owed. An error in this slot is logged and the Stop passes. |
 | SessionEnd | `hooks.sessionEnd` | In one transaction: stamps `ended_at` and the reason on the session row, and marks the session's open bounce rows `bypassed`. Waits at most 250 ms for a lock (SessionEnd hooks share a 1.5-second budget). Then, since 0.3.3, the decision-log entry (see [The decision-log entry](#the-decision-log-entry)). Prints nothing; errors go to the log. |
-| UserPromptSubmit | `hooks.userPromptCommands` | Answers from elsewhere (`inject.answers`): when the session has an id and the database already exists, every prompt reads the questions this session asked that another session or an untagged CLI run answered or withdrew since the session's last prompt (`cc_sessions.last_prompt_seen_at`, else its start), gives Claude one line each as `additionalContext` (`ledger: answered since your last turn: <name> → <word> (via <via>)`, or `… <name> withdrawn (via <via>)`), and moves the mark to now. Answers the session recorded itself are not repeated. Nothing found → nothing injected. Bare options: when the whole prompt is one option word of an open or held question, in any folder, alone or with trailing punctuation (`local`, `Local.`), Claude gets one line per such question as `additionalContext` (this session's questions first, then this folder's, then the rest): the question's `pending` line, its folder when it is not the cwd, and the `answer <q-id> <word>` command to run if the human meant it as their reply. Nothing is recorded by the hook and you are shown nothing; Claude decides and runs `answer`. A prompt never creates the database; a store that cannot be opened or a mark that cannot be written is logged to `errors.log` only. Ledger lines: when every non-blank line of the prompt is an id-bearing ledger line (`approve q-…`, `extend q-…`, an ordinal like `1 approve`) or `pending` / `log [N]` / `help`, applies them as a batch with `via = prompt-hook` and gives Claude the numbered results as `additionalContext`, after any answers-from-elsewhere lines (you see the same block as a `systemMessage`). One prose line anywhere → no line is applied. Free-text verbs (`ask`, `note`, `outcome`, `owe`), the owed-work verbs (`start`, `drop`, `done`, `wait`, and any line naming an `ow-` id) and `config` / `enable` / `disable` are never applied from a prompt. Owed work: on a prompt that is not ledger lines, with a session id and an existing database, the session's owed items that no open question waits on are given to Claude as `additionalContext` on every prompt while any exist, at most ten, under `ledger: approved work still owed (not started). A new topic does not cancel it; …` with the `start`, `hold` and `drop` commands; a failed read is logged and lists nothing. Never blocks the prompt. |
+| UserPromptSubmit | `hooks.userPromptCommands` | Answers from elsewhere (`inject.answers`): when the session has an id and the database already exists, every prompt reads the questions this session asked that another session or an untagged CLI run answered or withdrew since the session's last prompt (`cc_sessions.last_prompt_seen_at`, else its start), gives Claude one line each as `additionalContext` (`ledger: answered since your last turn: <name> → <word> (via <via>)`, or `… <name> withdrawn (via <via>)`), and moves the mark to now. Answers the session recorded itself are not repeated. Nothing found → nothing injected. Bare options: when the whole prompt is one option word of an open or held question, in any folder, alone or with trailing punctuation (`local`, `Local.`), Claude gets one line per such question as `additionalContext` (this session's questions first, then this folder's, then the rest): the question's `pending` line, its folder when it is not the cwd, and the `answer <q-id> <word>` command to run if the human meant it as their reply. Nothing is recorded by the hook and you are shown nothing; Claude decides and runs `answer`. A prompt never creates the database; a store that cannot be opened or a mark that cannot be written is logged to `errors.log` only. Ledger lines: when every non-blank line of the prompt is an id-bearing ledger line (`approve q-…`, `extend q-…`, an ordinal like `1 approve`) or `pending` / `log [N]` / `help`, applies them as a batch with `via = prompt-hook` and gives Claude the numbered results as `additionalContext`, after any answers-from-elsewhere lines (you see the same block as a `systemMessage`). One prose line anywhere → no line is applied. `review waive` and `review dismiss` are the human's verbs and are applied only here (see [Dismissing one finding](#dismissing-one-finding) and [Waive is the human's](#waive-is-the-humans)); a prompt that mixes one with prose applies nothing and says so, and the reply names the review gate's state after it. Free-text verbs (`ask`, `note`, `outcome`, `owe`), the owed-work verbs (`start`, `drop`, `done`, `wait`, and any line naming an `ow-` id) and `config` / `enable` / `disable` are never applied from a prompt. Owed work: on a prompt that is not ledger lines, with a session id and an existing database, the session's owed items that no open question waits on are given to Claude as `additionalContext` on every prompt while any exist, at most ten, under `ledger: approved work still owed (not started). A new topic does not cancel it; …` with the `start`, `hold` and `drop` commands; a failed read is logged and lists nothing. Never blocks the prompt. |
 
 ## Config
 
@@ -448,7 +448,7 @@ grouped by lab; no row at all denies; `pass-with-nits` allows with a notice list
 labs that were `unavailable` are left out and named in a notice, and when every lab was
 unavailable the push is allowed with a notice. A new commit is a new HEAD, so a pass does not
 carry over. A deny is only given while the database can take the write that lifts it (`review`,
-`waive`); when it is locked, the push is allowed with a notice.
+or a waive or dismiss the human types); when it is locked, the push is allowed with a notice.
 
 The round count needs a stable base. It is the merge-base with `origin/main` (else a local
 `main` or `master`); on a branch with neither, the base the branch's first review recorded, while
@@ -458,8 +458,9 @@ commit's review stays round 1); else HEAD's parent.
 **The loop.** After `findings`, the agent fixes the blocking and should findings, commits, and
 runs `ledger review` again on the new commit. Each reviewed commit on the branch (since the
 base) is one round; the output names the round and `review.maxRounds` (default 3). A review that
-would go past the cap stops without running and says to ask the human: waive with their reason,
-or continue with `--force-round`.
+would go past the cap stops without running and gives the waive line for the human to type
+(`review waive --in <folder> --head <sha> "<their reason>"`), or says to continue with
+`--force-round`.
 
 **The judge.** A blocking or should finding counts as resolved only when a judge model agrees.
 Each lab's outstanding findings are its latest row that is not `unavailable`, on any reviewed
@@ -506,11 +507,53 @@ and verdicts live in `lib/ledger-judge.mjs`.
 | :- | :- |
 | `review status` | the gate's state for HEAD; the branch's rounds (round, sha, lab, counts by severity, verdict); then every row for HEAD |
 | `review addressed "<why>"` | the manual override of a finding: records that HEAD resolves the outstanding findings of earlier commits, each checked by the judge. Refused without a reason, when HEAD has findings of its own (fix, commit and review again, or waive), when there are no outstanding findings, or when the judge says `no` (which records a `findings` row for HEAD naming them) |
-| `review waive "<why>"` | lets HEAD through; the reason is required and recorded. This is the way out when the human is prototyping or needs the push anyway |
+| `review waive [--in <folder>] [--head <sha>] "<why>"` | the human's, typed as their whole prompt: lets HEAD (of `--in`, else the session's folder) through; the reason is required and recorded. `--head` must name that folder's HEAD (a prefix of 7 or more characters counts); a stale one is refused with the current sha. This is the way out when the human is prototyping or needs the push anyway. Run by an agent or from a shell, it is refused before the store opens, with the line for the human to type |
+| `review dismiss <fd-id> wrong\|intentional\|doesnt-matter "<why>"` | the human's, typed as their whole prompt: dismisses one finding on HEAD with a disposition and a reason. Refused from a shell the same way as waive |
 | `review judge <key>` | prints one cached judge answer with the question and passage it was given (`judge:` prefix optional). Answers cached before 0.3.3 say `(not kept: cached before 0.3.3)` for both. Exit 1 for an unknown key |
 
 SessionStart adds `ledger: cross-lab review found N finding(s) on <sha>; run … review status`
 when HEAD has open blocking or should findings (not when `review.mode` is `off`).
+
+### Dismissing one finding
+
+Every finding carries an id (`fd-` and a short hash) from 0.4.12 on, kept across rounds while the
+same lab raises the same finding, whatever its severity. `review status` and the push denial list
+the open blocking and should findings of HEAD with the line to dismiss each one:
+
+```
+review dismiss fd-3k9x2a wrong|intentional|doesnt-matter "<your reason>"
+```
+
+The human types that line, with one disposition and their own reason, as their whole prompt in a
+Claude Code session. The UserPromptSubmit hook applies it with `via = prompt-hook`: it records a
+`cc_dismissals` row (who, which session, the finding's text, the disposition and reason) and
+republishes the lab's latest row for HEAD with that finding marked dismissed, so the gate re-reads
+it. The reply names the gate's state after it: `the review gate now allows <sha>`, or the findings
+still open. A dismissal is refused when the reason is empty, still the placeholder, starts with
+`--` or is longer than 1,000 characters; when the finding is not listed on HEAD any more, is
+already dismissed or was resolved by the judge; and when the finding belongs to an older commit.
+A finding from before 0.4.12 has no id until review runs again.
+
+A dismissal carries to a later commit only when the lab raises the same finding again and none
+of the files the finding cites changed since the dismissed commit. Every cited path has to
+resolve to one file at both commits: a path that is ambiguous, does not resolve, was renamed or
+changed reopens the finding, and the review output says which and why. A dismissal recorded
+while a review of the same commit is running applies from the next review.
+
+Run by an agent (`node scripts/ledger.mjs review dismiss …`, in argv or a batch on stdin), the
+verb is refused with exit 1 before the store is opened, and the refusal carries the line for the
+human to type. A prompt that mixes a dismiss line with prose applies nothing and says so.
+
+### Waive is the human's
+
+From 0.4.12, `review waive` is applied only when the human types it as their whole prompt in a
+Claude Code session, through the UserPromptSubmit hook. Every way-out text (the findings and
+no-review denials, the round cap, the plugin gate) gives the line to type, with the folder and
+the commit filled in, and tells the agent it cannot run it. The CLI refuses `review waive` in
+every form, `--help` and `--by` included, before the store opens, so a script that calls it now
+stops there. With `hooks.userPromptCommands` off, neither verb can be applied at all;
+`review.mode` in the user file is the remaining escape. An OMP session does not run ledger's
+UserPromptSubmit hook, so neither verb can be applied from OMP.
 
 ### The pattern-check receipt in the prompt
 
@@ -613,13 +656,13 @@ At push time the plugins are the pushed commit's (`git ls-tree`), not the checko
 removing a plugin's `hooks.json` from the checkout does not take it out of the gate, and a
 push of a commit other than HEAD needs rows for that commit. The PreToolUse deny, given with
 the note and review gates' as one numbered list when more than one applies, is `ledger: plugin
-gate: <plugin> has no check rows for <sha>; run \`… gate check\`, fix, or \`… review waive
-"<why>"\``, `… failed <check>: <detail>; run …`, or, for rows whose `tree_sha` is not that
+gate: <plugin> has no check rows for <sha>; run \`… gate check\`, fix, or ask the human to type
+\`review waive --in <folder> --head <sha> "<their reason>"\``, `… failed <check>: <detail>; run …`, or, for rows whose `tree_sha` is not that
 commit's plugin tree, `… <plugin>'s rows for <sha> certify tree <t1>, not its tree <t2>; run
 …`, or, for rows that lack one of the six checks (recorded by a ledger older than the
 check, such as 0.3.5 before `docs`), `… <plugin>'s rows for <sha> have no docs row (recorded by
 an older ledger); run \`… gate check\` again, …`. A
-`review waive` row for HEAD lifts this gate as it lifts the review gate; `review.mode`
+`waived` row for HEAD (from a waive the human typed) lifts this gate as it lifts the review gate; `review.mode`
 `advise` turns the deny into a notice and `off` turns the gate off. A repository that holds no
 plugin never sees it. The push's commits are resolved once for both gates, so a remote that hangs
 is waited on once. Any fault (git fails, a query throws) allows the push with a `systemMessage`
@@ -766,8 +809,11 @@ or the i-have-audhd profile) it reads up to 20 bounce texts per rule that fired 
 `fine`; that answer is printed beside the mechanical one as `(judge: …)` and never stored. A
 judge that is missing, fails, answers none of the three words, or has no texts to read (rows
 from before 0.3.3) prints `(judge unavailable: <reason>)`; the mechanical grade stands. Then:
-canary runs in the window per plugin (last status, counts, grades), reviews waived with their
-reasons, and the judge's cached yes/no answers. Read-only.
+canary runs in the window per plugin (last status, counts, grades); findings per lab (each
+finding counted once as raised, in the window its first raising falls in, so a finding carried
+from before the window is not counted, and the dismissals by disposition); every dismissal in the
+window with its commit, lab, id, disposition, reason and folder; reviews waived with their
+reasons; and the judge's cached yes/no answers. Read-only.
 
 ### `digest`
 
@@ -802,7 +848,7 @@ SELECT id, kind, body, made_by, made_at FROM cc_notes ORDER BY made_at DESC LIMI
 ```
 
 Tables: `cc_meta`, `cc_questions`, `cc_answers`, `cc_notes`, `cc_sessions`, `cc_bounces`,
-`cc_reviews`, `cc_judge_cache`, `cc_canary_runs`, `cc_gate_checks`, `cc_canary_prunes`. Timestamps are ISO
+`cc_reviews`, `cc_judge_cache`, `cc_canary_runs`, `cc_gate_checks`, `cc_canary_prunes`, `cc_dismissals`. Timestamps are ISO
 8601 UTC. `cc_questions.state` is `open`, `held`, `answered` or `withdrawn`; `cc_answers.via` is
 `cli`, `prompt-hook` or `freeform`; `cc_notes.kind` is `note`, `withdraw`, `extend` or `outcome`,
 and `cc_notes.ref` carries an outcome's PR, commit or path. Schema version 3 rebuilt
@@ -827,7 +873,16 @@ uncommitted one; `writes`, a JSON array of the files the live run left outside i
 directory, in placeholder form) and creates `cc_canary_prunes` (one row per declared
 `state[].prune` command the canary ran after the live runs: the path, the command, its status
 and exit code, and the bytes it reported freed). A 0.3.3 or 0.3.4 ledger on a schema-8 file
-runs on the tables both know, as described below for 0.3.1 on 7.
+runs on the tables both know, as described below for 0.3.1 on 7. Version 12 (0.4.12) creates
+`cc_dismissals` (one row per finding the human dismissed: the finding's `fd-` id, the folder,
+commit, branch, lab, severity and text, the disposition `wrong`/`intentional`/`doesnt-matter`, the
+reason, who and which session; `via` can only be `prompt-hook`; one row per finding and commit) and
+touches no existing table.
+
+The latest `cc_reviews` row for a commit and lab is the one with the highest `id`, not the latest
+`at` (`at` is the review's event time, taken before the write lock). That order holds only while
+nothing deletes the newest `cc_reviews` rows: do not prune `cc_reviews` from the newest end, and a
+future prune would need `AUTOINCREMENT` or a sequence column first.
 
 ### An older ledger on a newer file
 
@@ -950,6 +1005,9 @@ fault inputs).
 - A ceiling on a question is recorded and shown, never metered: nothing stops at the ceiling.
 - Disabling is per folder tree, not per repository: a `.ledger.json` with `"enabled": false` in your home directory would disable every project under it.
 - Claude Code only. On OMP the skill installs but no hook runs.
+- A shell-capable agent can still forge the human path for `review waive` and `review dismiss`: it could pipe crafted JSON into `hooks/user-prompt.mjs`, or write to the SQLite file directly. The lock stops the documented verbs and every CLI call, not deliberate forgery. Every dismissal and waive row carries its session, and `report` lists each one with its reason, so a reason the human never typed shows in the weekly digest.
+- The human can no longer waive or dismiss from a plain terminal, and an OMP session does not run ledger's UserPromptSubmit hook, so a human working only in OMP has no way to apply either verb.
+- A handed-over script that does not stop on its first failure runs its push after the refused waive. That push was never gated, but no `waived` row records it now.
 
 ## Developing
 
@@ -962,6 +1020,15 @@ Tests use a sandboxed `HOME`, `XDG_*` and `LEDGER_*` so they never touch your le
 `LEDGER_CWD` and `LEDGER_BUSY_TIMEOUT_MS` environment variables exist for the tests.
 
 ## Changes
+
+### 0.4.12
+
+- `review dismiss <fd-id> wrong|intentional|doesnt-matter "<why>"` dismisses one finding; findings
+  carry `fd-` ids; dismissals carry to a later commit only when no cited file changed;
+  `cc_dismissals` (schema 12); `report` counts findings raised and dismissed per lab.
+- `review waive` and `review dismiss` are applied only when the human types them as a prompt;
+  the CLI refuses both before the store opens. Waive gains `--in` and `--head`, and every way-out
+  text gives the line for the human to type.
 
 ### 0.4.11
 
