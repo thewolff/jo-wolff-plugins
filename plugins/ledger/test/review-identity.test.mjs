@@ -177,3 +177,23 @@ test("identity: dismissed finding repeated after an unrelated commit keeps its i
   assert.equal(dismissals(b).length, 1);
   noDuplicateIds(b);
 });
+
+test("report: a finding downgraded to a nit and raised again counts once as raised", async () => {
+  const { gather } = await import("../lib/report.mjs");
+  const b = repo();
+  const codex = stub(b, "codex", "1. [blocking] a.txt:1 the parser drops the last line");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: codex.path });
+  commit(b, "a.txt", "changed\n");
+  codex.set("1. [nit] a.txt:1 the parser drops the last line");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: codex.path, LEDGER_JUDGE_BIN: judge(b, "yes") });
+  commit(b, "c.txt", "more\n");
+  codex.set("1. [blocking] a.txt:1 the parser drops the last line");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: codex.path });
+  const db = openDb(b);
+  try {
+    const [codexLab] = gather(db, { since: "7d" }).findings.labs;
+    assert.deepEqual([codexLab.lab, codexLab.raised, codexLab.bySeverity], ["codex", 1, { blocking: 1 }]);
+  } finally {
+    db.close();
+  }
+});
