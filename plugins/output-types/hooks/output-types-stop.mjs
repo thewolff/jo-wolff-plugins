@@ -33,7 +33,7 @@
 // handle() runs on a worker thread: it returns a plain object or null, never writes stdout or
 // exits, and passes env to the judge's spawn explicitly.
 
-import { DEADLINE_MS, invokedDirectly, runHook } from "../lib/hook-runner.mjs";
+import { DEADLINE_MS, invokedDirectly, logError, runHook } from "../lib/hook-runner.mjs";
 import {
   HOOK_FILE,
   commandsNamed,
@@ -52,6 +52,7 @@ import {
   renderRecordParts,
   renderWarning,
   renderZeroLabel,
+  skippedLogPath,
   urlsNamed,
   zeroLabelConfig,
 } from "../lib/receipts.mjs";
@@ -150,11 +151,15 @@ const callName = (call) => {
  * RECORD_MAX_CALLS calls or RECORD_MAX_CHARS characters left a matched call out, and it has no
  * absolute file:line (the log line names each call left out and the cap). With a file:line the
  * statement is judged and the record's last lines say what was left out.
+ * A skipped.log line that could not be written is pushed onto `unlogged` instead, for the caller to surface.
  */
-export function withRecords(receipted, session, { env = process.env, hook = HOOK_FILE } = {}) {
+export function withRecords(receipted, session, { env = process.env, hook = HOOK_FILE, unlogged = [] } = {}) {
   const out = [];
   let calls;
-  const skip = (s, why) => logSkipped(`${nameOf(s)} judge not run: ${why}`, env, new Date(), hook);
+  const skip = (s, why) => {
+    const line = `${nameOf(s)} judge not run: ${why}`;
+    if (!logSkipped(line, env, new Date(), hook)) unlogged.push(line);
+  };
   for (const s of receipted) {
     if (!commandsNamed(s.text).length && !urlsNamed(s.text).length) {
       out.push(s);
@@ -217,6 +222,7 @@ export async function handle(input, { env = process.env, startedAt = runnerStart
   if (!statements.length) return zeroLabel(text, session, { env, who: src.who });
   const findings = [];
   const receipted = [];
+  const unlogged = [];
   for (const s of statements) {
     const why = missingReceipt(s);
     if (why) findings.push({ statement: s, why });
@@ -228,12 +234,16 @@ export async function handle(input, { env = process.env, startedAt = runnerStart
     // OUTPUT_TYPES_STOP_DEADLINE_MS is for tests: the runner's deadline and the judge budget follow it together.
     const budget = budgetMs ?? (Number(env.HOOK_RUNNER_DEADLINE_MS) || Number(env.OUTPUT_TYPES_STOP_DEADLINE_MS) || JUDGE_DEADLINE_MS);
     if (judge) {
-      const toJudge = withRecords(receipted, session, { env, hook: src.hook });
+      const toJudge = withRecords(receipted, session, { env, hook: src.hook, unlogged });
       findings.push(...(await judgeStage(toJudge, judge, { env, startedAt, budgetMs: budget, run, hook: src.hook })));
     } else logSkipped(noJudgeReason(env), env, new Date(), src.hook);
   }
   findings.sort((a, b) => a.statement.line - b.statement.line);
-  const message = renderWarning(findings);
+  // A skip that skipped.log could not hold is the runner's failed-open case: one errors.log line
+  // (which may fail too, in the same directory) and a systemMessage carrying the reasons themselves.
+  const failed = unlogged.length ? `skipped.log could not be written (${skippedLogPath(env)}); ${unlogged.length} statement${unlogged.length === 1 ? "" : "s"} not judged: ${unlogged.join("; ")}` : null;
+  if (failed) logError("output-types", src.event, failed, env);
+  const message = [failed && `output-types ${src.event} failed open: ${failed}`, renderWarning(findings)].filter(Boolean).join("\n");
   return message ? { systemMessage: message } : null;
 }
 

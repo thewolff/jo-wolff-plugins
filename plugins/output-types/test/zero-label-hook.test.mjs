@@ -225,6 +225,26 @@ test("judge on, a URL receipt and no readable transcript (the plan's no-transcri
   assert.match(lines[0], /line 1 \*\*CITE\*\* ".*" judge not run: no transcript was readable to match its command or URL against$/);
 });
 
+test("judge on, a statement skipped while the state dir is unwritable → exit 0, no judge call, and a failed-open systemMessage carries the skip reason skipped.log could not hold", { skip: process.getuid?.() === 0 ? "root ignores modes" : false }, () => {
+  const box = sandbox();
+  const judge = fakeJudge(box);
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  mkdirSync(box.env.XDG_STATE_HOME, { recursive: true });
+  chmodSync(box.env.XDG_STATE_HOME, 0o500);
+  try {
+    const path = writeTranscript(box, [...bashTurn(1), assistant([text("**CLAIM**\n`make all` → built")])]);
+    const r = runStop(box, payload(box, path), env);
+    assertAllows(r, 10_000);
+    assert.deepEqual(judge.calls(), []);
+    assert.ok(r.json, `expected JSON output, got ${JSON.stringify(r.stdout)}`);
+    assert.match(r.json.systemMessage, /^output-types Stop failed open: skipped\.log could not be written/);
+    assert.match(r.json.systemMessage, /line 1 \*\*CLAIM\*\* ".*" judge not run: no Bash or WebFetch call in the last 16 MiB of the transcript matches its command or URL/);
+  } finally {
+    chmodSync(box.env.XDG_STATE_HOME, 0o700);
+  }
+  assert.deepEqual(skippedLines(box), []);
+});
+
 test("Stop with no last_assistant_message: the parent's final text is checked, not a later sidechain assistant entry", () => {
   const box = sandbox();
   const entries = [
