@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { sandbox, cli, hook, openDb, typed } from "./helpers.mjs";
 
@@ -81,4 +81,21 @@ export function dismissals(b) {
 export function openIds(b, lab = "codex") {
   const row = reviewRows(b).filter((r) => r.lab === lab).at(-1);
   return (row?.items ?? []).filter((i) => !i.resolved).map((i) => i.id);
+}
+
+/** A judge stub: prints `answer` and appends one line per call to `<path>.calls`. */
+export function judge(b, answer) {
+  const path = join(b.root, `judge-${answer}`);
+  writeFileSync(path, `#!/bin/sh\ncat > /dev/null\necho x >> "${path}.calls"\necho ${answer}\n`);
+  chmodSync(path, 0o755);
+  return path;
+}
+
+/** How many times the judge stub at `path` was asked. */
+export function judgeCalls(path) {
+  try {
+    return readFileSync(`${path}.calls`, "utf8").split("\n").filter(Boolean).length;
+  } catch {
+    return 0;
+  }
 }
