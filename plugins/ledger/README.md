@@ -542,7 +542,8 @@ while a review of the same commit is running applies from the next review.
 
 Run by an agent (`node scripts/ledger.mjs review dismiss …`, in argv or a batch on stdin), the
 verb is refused with exit 1 before the store is opened, and the refusal carries the line for the
-human to type. A prompt that mixes a dismiss line with prose applies nothing and says so.
+human to type. A stdin batch that holds a dismiss or waive line anywhere is refused whole: no line
+of it is applied, and the store is not opened, created or migrated. A prompt that mixes a dismiss line with prose applies nothing and says so.
 
 ### Waive is the human's
 

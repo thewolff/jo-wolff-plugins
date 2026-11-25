@@ -33,7 +33,8 @@ All notable changes to ledger are recorded here. The format follows
 - `review waive` and `review dismiss` are applied only when the human types them as a prompt in a
   Claude Code session (the UserPromptSubmit hook, `via = prompt-hook`). The CLI refuses both, in
   argv or on stdin and with `--help` or `--by`, with exit 1 before the store opens, and prints the
-  line for the human to type. A prompt that mixes either line with prose applies nothing and says
+  line for the human to type. A stdin batch holding either line is refused whole, before the store
+  opens, and applies none of its lines. A prompt that mixes either line with prose applies nothing and says
   so.
 - Every way-out text (the findings and no-review denials, both round-cap texts, the plugin gate,
   the `next:` line) now says to ask the human to type the waive or dismiss line, with the folder
