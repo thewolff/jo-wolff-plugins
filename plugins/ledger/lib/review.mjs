@@ -1511,7 +1511,8 @@ export async function addressed({ db, dbPath, cwd, reason, config = {}, env = pr
     return { code: 1, text: `refused ${short(head)} has review findings of its own; fix them, commit, and run \`review\` again, or ask the human to dismiss or waive them` };
   }
   const base = defaultBase(db, top, head, branch);
-  const owed = [...outstanding(db, top, branchRounds(db, top, base, head), head).values()].filter((e) => e.row.head_sha !== head);
+  const rounds = branchRounds(db, top, base, head);
+  const owed = [...outstanding(db, top, rounds, head).values()].filter((e) => e.row.head_sha !== head);
   if (!owed.length) return { code: 1, text: `refused no outstanding review findings on an earlier commit of this branch in ${top}; nothing to address` };
   const judgedByLab = [];
   for (const entry of owed) {
@@ -1532,7 +1533,9 @@ export async function addressed({ db, dbPath, cwd, reason, config = {}, env = pr
         lab: row.lab,
         model: row.model,
         verdict: "findings",
-        items,
+        // A legacy item (before 0.4.12) gets its id and its first round's raisedAt here, so the
+        // human can dismiss it; an item that has an id keeps it.
+        items: assignIds(items, { rounds, lab: row.lab, head, at }),
         reason: `addressed claimed: ${why}; the judge said no`,
         at,
       });
