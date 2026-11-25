@@ -279,6 +279,21 @@ test("prompt_id: a typed dismiss stores the hook input's prompt_id exactly, and 
   assert.deepEqual(dismissals(b).map((d) => [d.finding_id, d.prompt_id]).sort(), [[first, promptId], [second, null]].sort());
 });
 
+test("two similar prior findings, the reply lists only the first: the second goes to the judge, and dismissing the first leaves the gate held on the second (REV-01)", () => {
+  const b = repo();
+  const codex = stub(b, "codex", "1. [blocking] a.txt:1 the first branch drops the error\n2. [blocking] a.txt:1 the second branch drops the error");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: codex.path });
+  const [first, second] = openIds(b);
+  commit(b, "c.txt", "unrelated\n");
+  codex.set("1. [blocking] a.txt:1 the first branch drops the error");
+  const no = judge(b, "no");
+  const r = review(b, [], { LEDGER_REVIEW_BIN_CODEX: codex.path, LEDGER_JUDGE_BIN: no });
+  assert.ok(r.out.includes(`judge no: `) && r.out.includes("second branch"), r.out);
+  assert.deepEqual(openIds(b).sort(), [first, second].sort());
+  assert.match(typed(b, `review dismiss ${first} wrong checked by hand`).message, new RegExp(`still open: ${second}`));
+  assert.equal(decision(push(b)), "deny");
+});
+
 test("a dismiss line mixed with prose applies nothing and the hook says to type it alone", () => {
   const { b, ids } = reviewed();
   const t = typed(b, `please record this for me\nreview dismiss ${ids[0]} wrong the line is right`);
