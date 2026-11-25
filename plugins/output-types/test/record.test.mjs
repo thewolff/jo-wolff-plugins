@@ -170,6 +170,12 @@ test("urlsNamed: trailing punctuation, quotes, brackets and backticks stripped",
   assert.deepEqual(urlsNamed("no urls, http:// alone"), []);
 });
 
+test("urlsNamed: a closing paren that balances one in the URL is kept; a prose paren around the URL is still stripped", () => {
+  assert.deepEqual(urlsNamed("per https://example.org/Function_(mathematics) the map is total."), ["https://example.org/Function_(mathematics)"]);
+  assert.deepEqual(urlsNamed("(see https://example.org/a)"), ["https://example.org/a"]);
+  assert.deepEqual(urlsNamed("(https://example.org/F_(x))."), ["https://example.org/F_(x)"]);
+});
+
 test("commandIn: fragments split at … and ..., whitespace folded (the receipts audit's rule)", () => {
   assert.equal(commandIn("npm test", "cd /x && npm   test --silent"), true);
   assert.equal(commandIn("git log … --oneline", "git log -3 --oneline"), true);
