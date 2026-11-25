@@ -5,7 +5,8 @@
 // results. The prompt still reaches Claude. This hook NEVER blocks a prompt: it has no
 // `decision` field and no exit 2 path.
 //
-// Input read: prompt, session_id, cwd (hooks reference § UserPromptSubmit input). Lines
+// Input read: prompt, session_id, prompt_id (stored on a dismissal when present), cwd (hooks
+// reference § UserPromptSubmit input). Lines
 // between `<pasted_content …>` and `</pasted_content …>` markers are kept; the marker lines
 // themselves are dropped, as the reference says to account for them.
 //
@@ -160,9 +161,9 @@ function owedLines(store, sessionId, cwd, now, env) {
 }
 
 /** Apply the prompt's ledger lines; null when one of them is prose. */
-function applyLines(store, lines, cwd, sessionId, now) {
+function applyLines(store, lines, cwd, sessionId, now, promptId = null) {
   if (parseAll(lines, store.db, cwd).some((p) => p.kind === "prose")) return null;
-  const ctx = makeCtx({ store, cwd, via: "prompt-hook", sessionId, now });
+  const ctx = makeCtx({ store, cwd, via: "prompt-hook", sessionId, promptId, now });
   const batch = runBatch(lines, { db: store.db, ctx, onlyPromptApplicable: true });
   const block = formatBatch(batch, { numbered: true });
   const busy = batch.busy ? `ledger: database ${busyWord(batch.busy)} at ${batch.busy.path}; the lines marked not applied were not applied\n` : "";
@@ -178,6 +179,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
   if (!ready) return null;
   const { cfg, cwd } = ready;
   const sessionId = typeof input.session_id === "string" && input.session_id ? input.session_id : null;
+  const promptId = typeof input.prompt_id === "string" && input.prompt_id ? input.prompt_id : null;
   const lines = ledgerLines(input.prompt);
   const watch = Boolean(sessionId) && existsSync(cfg.config.db);
   const answers = watch && cfg.config.inject.answers !== false;
@@ -191,7 +193,7 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
   const out = withStore({ env, now, notices: cfg.notices, cwd, cfg, hook: "UserPromptSubmit" }, lines ? "the ledger lines in this prompt were not applied" : "answers recorded in other sessions were not checked", (store) => {
     const news = answers ? takeAnswers(store, sessionId, cwd, now, env) : [];
     const hints = watch && !lines ? bareOptionLines(store, input.prompt, cwd, sessionId, now, cfg) : [];
-    const applied = lines ? applyLines(store, lines, cwd, sessionId, now) : null;
+    const applied = lines ? applyLines(store, lines, cwd, sessionId, now, promptId) : null;
     // A prompt of ledger lines gets the batch block instead: each answer line already names what it left owed.
     const owed = watch && !lines ? owedLines(store, sessionId, cwd, now, env) : [];
     const strayText = !applied && stray.length ? strayHumanVerbText(stray) : "";

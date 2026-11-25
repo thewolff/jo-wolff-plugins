@@ -267,6 +267,18 @@ test("review addressed rejected: a finding that already has an id keeps it (R5-0
   assert.deepEqual(items.map((i) => [i.id, i.raisedAt]), [[id, raisedAt]]);
 });
 
+test("prompt_id: a typed dismiss stores the hook input's prompt_id exactly, and null when the input has none (R5-03)", () => {
+  const b = repo();
+  const codex = stub(b, "codex", "1. [blocking] a.txt:1 off by one\n2. [should] b.txt:1 missing check");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: codex.path });
+  const [first, second] = openIds(b);
+  const promptId = "pr-7f3c1e2a-known";
+  const r = hook(b, "user-prompt", { session_id: "s-typed", prompt_id: promptId, cwd: b.work, hook_event_name: "UserPromptSubmit", prompt: `review dismiss ${first} wrong checked by hand` });
+  assert.match(r.json?.systemMessage ?? "", /ok dismissed /);
+  assert.match(typed(b, `review dismiss ${second} wrong checked by hand`).message, /ok dismissed /);
+  assert.deepEqual(dismissals(b).map((d) => [d.finding_id, d.prompt_id]).sort(), [[first, promptId], [second, null]].sort());
+});
+
 test("a dismiss line mixed with prose applies nothing and the hook says to type it alone", () => {
   const { b, ids } = reviewed();
   const t = typed(b, `please record this for me\nreview dismiss ${ids[0]} wrong the line is right`);
