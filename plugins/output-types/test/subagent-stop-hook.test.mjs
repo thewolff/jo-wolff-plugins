@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { extractReport, handle, sourceFor } from "../hooks/output-types-stop.mjs";
 import { readSession } from "../lib/transcript.mjs";
@@ -135,6 +135,27 @@ test("SubagentStop: skipped.log lines name hooks/output-types-subagent-stop.mjs"
   const lines = skipped(box);
   assert.equal(lines.length, 1);
   assert.match(lines[0], /^\S+Z hooks\/output-types-subagent-stop\.mjs judge not run: judge is on but no command is configured/);
+});
+
+test("SubagentStop, judge on, no command configured, state dir unwritable → exit 0, and the failed-open systemMessage names SubagentStop and carries the reason", { skip: process.getuid?.() === 0 ? "root ignores modes" : false }, () => {
+  const box = sandbox();
+  const dir = join(box.root, "config");
+  mkdirSync(join(dir, "output-types"), { recursive: true });
+  writeFileSync(join(dir, "output-types", "config.json"), JSON.stringify({ judge: true }));
+  const path = agentTranscript(box, { report: "**CLAIM** the file says so: /srv/a.ts:3" });
+  mkdirSync(box.env.XDG_STATE_HOME, { recursive: true });
+  chmodSync(box.env.XDG_STATE_HOME, 0o500);
+  let r;
+  try {
+    r = run(box, payload(box, path), { XDG_CONFIG_HOME: dir });
+  } finally {
+    chmodSync(box.env.XDG_STATE_HOME, 0o700);
+  }
+  assertAllows(r);
+  assert.ok(r.json, `expected JSON output, got ${JSON.stringify(r.stdout)}`);
+  assert.match(r.json.systemMessage, /^output-types SubagentStop failed open: skipped\.log could not be written/);
+  assert.match(r.json.systemMessage, /judge not run: judge is on but no command is configured/);
+  assert.deepEqual(skipped(box), []);
 });
 
 test("SubagentStop fault inputs: empty stdin, malformed JSON, missing agent transcript, unwritable state dir, a 5-second budget → exit 0, never a block", async () => {

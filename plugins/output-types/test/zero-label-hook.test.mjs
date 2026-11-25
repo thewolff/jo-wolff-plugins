@@ -245,6 +245,25 @@ test("judge on, a statement skipped while the state dir is unwritable → exit 0
   assert.deepEqual(skippedLines(box), []);
 });
 
+test("judge on, a judge dispatch that fails while the state dir is unwritable → exit 0, and the failed-open systemMessage carries the dispatch error skipped.log could not hold", { skip: process.getuid?.() === 0 ? "root ignores modes" : false }, () => {
+  const box = sandbox();
+  const judge = fakeJudge(box, "echo nope >&2; exit 2");
+  const env = configEnv(box, { judge: true, judgeCommand: judge.command });
+  mkdirSync(box.env.XDG_STATE_HOME, { recursive: true });
+  chmodSync(box.env.XDG_STATE_HOME, 0o500);
+  try {
+    const r = runStop(box, payload(box, join(box.root, "missing.jsonl"), { last_assistant_message: "**CLAIM** the handler returns early: /srv/app/src/a.ts:41" }), env);
+    assertAllows(r, 10_000);
+    assert.equal(judge.calls().length, 1);
+    assert.ok(r.json, `expected JSON output, got ${JSON.stringify(r.stdout)}`);
+    assert.match(r.json.systemMessage, /^output-types Stop failed open: skipped\.log could not be written/);
+    assert.match(r.json.systemMessage, /line 1 \*\*CLAIM\*\* ".*" judge nonzero: /);
+  } finally {
+    chmodSync(box.env.XDG_STATE_HOME, 0o700);
+  }
+  assert.deepEqual(skippedLines(box), []);
+});
+
 test("Stop with no last_assistant_message: the parent's final text is checked, not a later sidechain assistant entry", () => {
   const box = sandbox();
   const entries = [
