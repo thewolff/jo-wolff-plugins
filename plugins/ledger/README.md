@@ -812,7 +812,8 @@ judge that is missing, fails, answers none of the three words, or has no texts t
 from before 0.3.3) prints `(judge unavailable: <reason>)`; the mechanical grade stands. Then:
 canary runs in the window per plugin (last status, counts, grades); findings per lab (each
 finding counted once as raised, in the window its first raising falls in, so a finding carried
-from before the window is not counted, and the dismissals by disposition); every dismissal in the
+from before the window is not counted, and the dismissals by disposition; a lab row whose findings
+cannot be read is not counted and is listed by row id, lab and commit); every dismissal in the
 window with its commit, lab, id, disposition, reason and folder (counted in full; the newest
 5,000 are listed, with a line saying how many older ones are not); reviews waived with their
 reasons; and the judge's cached yes/no answers. Read-only.
