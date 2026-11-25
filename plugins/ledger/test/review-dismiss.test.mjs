@@ -504,3 +504,40 @@ test("a dismissal that commits and then cannot read the gate state reports it ap
   assert.deepEqual(dismissals(b).map((d) => [d.id, d.finding_id]), [[r.id, ids[0]]]);
   assert.match(typed(b, `review dismiss ${ids[0]} wrong again`).message, /already dismissed/);
 });
+
+test("a review whose late-dismissal read fails after the lab row commits returns its normal result, says the late dismissals could not be read, and leaves the finding open (round 2 sweep)", async () => {
+  const b = repo();
+  const codex = stub(b, "codex", "1. [blocking] a.txt:1 off by one");
+  const { runReview } = await import("../lib/review.mjs");
+  const store = openStore({ env: b.env, cwd: b.work });
+  let committed = false;
+  // Every cc_dismissals read after the lab row's COMMIT fails; reads before it (the carry check) work.
+  const db = new Proxy(store.db, {
+    get(real, prop) {
+      if (prop === "exec")
+        return (sql) => {
+          const r = real.exec(sql);
+          if (sql === "COMMIT") committed = true;
+          return r;
+        };
+      if (prop === "prepare")
+        return (sql) => {
+          if (committed && /cc_dismissals/.test(sql)) throw new Error("disk I/O error (test)");
+          return real.prepare(sql);
+        };
+      const v = real[prop];
+      return typeof v === "function" ? v.bind(real) : v;
+    },
+  });
+  let r;
+  try {
+    r = await runReview({ db, dbPath: store.dbPath, cwd: b.work, env: { ...b.env, LEDGER_REVIEW_BIN_CODEX: codex.path }, config: store.config, labs: ["codex"], sessionId: SID });
+  } finally {
+    store.db.close();
+  }
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /^codex: findings/m);
+  assert.match(r.text, /^  codex: late dismissals could not be read \(disk I\/O error \(test\)\); any dismissal recorded while this review ran stays open until the next review; run review status$/m);
+  assert.equal(reviewRows(b).filter((x) => x.lab === "codex").at(-1).verdict, "findings");
+  assert.equal(decision(push(b)), "deny");
+});
