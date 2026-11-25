@@ -89,20 +89,24 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
 
   // `review dismiss` and `review waive` are the human's: applied only from a prompt they typed
   // (hooks/user-prompt.mjs). From the CLI they are refused before the store is opened, so no
-  // agent call can create, migrate or write it; a batch of only such lines is refused whole.
+  // agent call can create, migrate or write it. A batch holding any such line is refused whole,
+  // before the store opens: no line of it is applied, the other lines included.
   const human = lines.map((l) => humanVerbLine(typeof l === "string" ? l : l.text, typeof l === "string" ? null : l.tokens));
   const nonBlank = human.filter((h) => h.kind !== "blank");
-  if (nonBlank.length && nonBlank.every((h) => h.verb)) {
+  const humanLines = human.flatMap((h, i) => (h.verb ? [i + 1] : []));
+  if (humanLines.length) {
+    const which = `${humanLines.length === 1 ? "line" : "lines"} ${humanLines.join(", ")} (review dismiss/waive) ${humanLines.length === 1 ? "is" : "are"} the human's`;
     const results = human.map((h, i) =>
       h.kind === "blank"
         ? { line: i + 1, text: h.text, status: "skipped", id: null, message: "blank" }
-        : { line: i + 1, text: h.text, status: "refused", id: null, message: humanOnlyText(h.verb, h.fields, cwd) },
+        : h.verb
+          ? { line: i + 1, text: h.text, status: "refused", id: null, message: humanOnlyText(h.verb, h.fields, cwd) }
+          : { line: i + 1, text: h.text, status: "refused", id: null, message: `not applied: ${which}, so nothing in this batch was applied; run this line again without ${humanLines.length === 1 ? "it" : "them"}` },
     );
     const batch = { results, applied: 0, refused: nonBlank.length, prose: 0 };
     out((cli.json ? JSON.stringify(batchJson(batch), null, 2) : formatBatch(batch, { numbered })) + "\n");
     return 1;
   }
-  const humanLines = human.flatMap((h, i) => (h.verb ? [i + 1] : []));
 
   // `enable` and `disable` only write .ledger.json; they must work when the database cannot be
   // opened, since turning the hooks off is the way out of a broken store. Same for `help`.
@@ -142,10 +146,9 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
     store = openStore({ env, cwd });
   } catch (e) {
     if (e instanceof StoreError) {
-      const tail = humanLines.length ? `; lines ${humanLines.join(", ")} (review dismiss/waive) are the human's and would be refused anyway` : "";
-      if (e.kind === "busy" || e.kind === "readonly") err(`ledger: database ${busyWord(e)} at ${e.path}; nothing applied${tail}\n`);
-      else if (e.kind === "corrupt") err(`${e.message}; nothing applied, the file was left as it is${tail}\n`);
-      else err(`${e.message}${tail}\n`);
+      if (e.kind === "busy" || e.kind === "readonly") err(`ledger: database ${busyWord(e)} at ${e.path}; nothing applied\n`);
+      else if (e.kind === "corrupt") err(`${e.message}; nothing applied, the file was left as it is\n`);
+      else err(`${e.message}\n`);
       return 2;
     }
     throw e;

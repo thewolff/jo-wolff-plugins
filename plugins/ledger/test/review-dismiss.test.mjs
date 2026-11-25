@@ -137,14 +137,29 @@ test("dismiss from the CLI with an inaccessible store and with a read-only store
   assert.match(r.out, /^refused review dismiss is the human's/);
 });
 
-test("a stdin batch mixing a dismiss line with pending: pending applies as before, the dismiss line is refused", () => {
+test("a stdin batch mixing a dismiss line with pending is refused whole before the store opens: nothing applied, the dismiss line says to type it as a prompt", () => {
   const { b, ids } = reviewed();
+  const before = storeBytes(b);
   const r = cli(b, [], { input: `pending\nreview dismiss ${ids[0]} wrong the line is right\n`, env: { LEDGER_SESSION_ID: SID } });
   assert.equal(r.code, 1);
-  assert.match(r.out, /^1: ok\n/);
-  assert.match(r.out, /^2: refused review dismiss is the human's: /m);
-  assert.match(r.out, /^applied 1, refused 1, not commands 0$/m);
+  assert.match(r.out, /^1: refused not applied: line 2 \(review dismiss\/waive\) is the human's/m);
+  assert.match(r.out, /^2: refused review dismiss is the human's: .*as their whole prompt in a Claude Code session/m);
+  assert.match(r.out, /^applied 0, refused 2, not commands 0$/m);
+  assert.equal(storeBytes(b), before);
   assert.deepEqual(dismissals(b), []);
+});
+
+test("a mixed stdin batch with review waive against a state with no database: exit 1, no database file created, nothing applied", () => {
+  const b = repo();
+  const fresh = join(b.root, "fresh", "ledger.db");
+  mkdirSync(join(b.root, "fresh"));
+  for (const input of ["pending\nreview waive prototype\n", "note hello\nreview dismiss fd-abc wrong x\n\n"]) {
+    const r = cli(b, [], { input, env: { LEDGER_DB: fresh, LEDGER_SESSION_ID: SID } });
+    assert.equal(r.code, 1, r.out + r.err);
+    assert.match(r.out, /is the human's: ask them to type this as their whole prompt/);
+    assert.match(r.out, /^applied 0, refused 2, not commands 0$/m);
+    for (const s of ["", "-wal", "-shm"]) assert.equal(existsSync(fresh + s), false, `${fresh}${s} for ${JSON.stringify(input)}`);
+  }
 });
 
 test("dismiss typed as the whole prompt clears one finding: a cc_dismissals row via prompt-hook and a superseding row built from the latest row", () => {
