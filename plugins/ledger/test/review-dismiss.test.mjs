@@ -227,6 +227,46 @@ test("dismiss refusals: a finding the judge already resolved, and a legacy item 
   assert.deepEqual(dismissals(b), []);
 });
 
+test("migration path: a pre-0.4.12 finding with no id, a rejected review addressed claim, then the human dismisses the resulting HEAD finding by its new id (R5-02)", () => {
+  const b = repo();
+  const top = b.work;
+  const legacySha = git(b, "rev-parse", "HEAD");
+  const legacyAt = "2026-11-01T00:00:00.000Z";
+  const db = openDb(b);
+  try {
+    insert(db, { cwd: top, head: legacySha, base: git(b, "rev-parse", "main"), lab: "codex", verdict: "findings", findings: "1. [blocking] b.txt:1 off by one", items: [{ severity: "blocking", text: "b.txt:1 off by one" }], at: legacyAt });
+  } finally {
+    db.close();
+  }
+  const head = commit(b, "c.txt", "attempted fix\n");
+  const r = review(b, ["addressed", "fixed in c.txt"], { LEDGER_JUDGE_BIN: judge(b, "no") });
+  assert.equal(r.code, 1, r.out);
+  const row = reviewRows(b).filter((x) => x.lab === "codex").at(-1);
+  assert.equal(row.head_sha, head);
+  assert.equal(row.items.length, 1);
+  assert.match(row.items[0].id ?? "", /^fd-/, JSON.stringify(row.items));
+  assert.equal(row.items[0].raisedAt, legacyAt, "a legacy finding's raisedAt is its first round's");
+  const [id] = openIds(b);
+  const denied = push(b);
+  assert.equal(decision(denied), "deny");
+  assert.ok(denyText(denied).includes(`review dismiss ${id} wrong|intentional|doesnt-matter`), denyText(denied));
+  assert.match(typed(b, `review dismiss ${id} intentional kept on purpose`).message, /ok dismissed /);
+  assert.equal(dismissals(b).length, 1);
+  assert.equal(decision(push(b)), "allow");
+});
+
+test("review addressed rejected: a finding that already has an id keeps it (R5-02)", () => {
+  const b = repo();
+  const codex = stub(b, "codex", "1. [blocking] b.txt:1 off by one");
+  review(b, [], { LEDGER_REVIEW_BIN_CODEX: codex.path });
+  const [id] = openIds(b);
+  const raisedAt = reviewRows(b).at(-1).items[0].raisedAt;
+  commit(b, "c.txt", "attempted fix\n");
+  assert.equal(review(b, ["addressed", "fixed in c.txt"], { LEDGER_JUDGE_BIN: judge(b, "no") }).code, 1);
+  const items = reviewRows(b).filter((x) => x.lab === "codex").at(-1).items;
+  assert.deepEqual(items.map((i) => [i.id, i.raisedAt]), [[id, raisedAt]]);
+});
+
 test("a dismiss line mixed with prose applies nothing and the hook says to type it alone", () => {
   const { b, ids } = reviewed();
   const t = typed(b, `please record this for me\nreview dismiss ${ids[0]} wrong the line is right`);
