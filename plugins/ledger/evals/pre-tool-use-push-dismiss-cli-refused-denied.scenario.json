@@ -1,0 +1,33 @@
+{
+  "$comment": "A review (a stub codex that reports one blocking finding) denies the push; an agent's `ledger review dismiss` from the shell is refused before the store opens (the setup line tolerates its exit 1), so the push stays denied for the finding (0.4.12).",
+  "event": "PreToolUse",
+  "expect": "deny",
+  "reason": "cross-lab review found problems",
+  "setup": {
+    "files": {
+      "codex-stub": "#!/bin/sh\ncat > /dev/null\necho '1. [blocking] a.txt:1 off by one'\n"
+    },
+    "commands": [
+      "git -c user.name=t -c user.email=t@t -C \"${CWD}\" commit -q --allow-empty -m init",
+      "LEDGER_SESSION_ID=\"${SESSION_ID}\" node \"${PLUGIN_DIR}/scripts/ledger.mjs\" note \"pushing the change\"",
+      "mkdir \"${CWD}/story-charts-step1\"",
+      "git -C \"${CWD}/story-charts-step1\" init -q -b main",
+      "echo one > \"${CWD}/story-charts-step1/a.txt\"",
+      "git -C \"${CWD}/story-charts-step1\" add a.txt",
+      "git -c user.name=t -c user.email=t@t -C \"${CWD}/story-charts-step1\" commit -q -m one",
+      "chmod +x \"${CWD}/codex-stub\"",
+      "cd \"${CWD}/story-charts-step1\" && LEDGER_SESSION_ID=\"${SESSION_ID}\" LEDGER_REVIEW_BIN_CODEX=\"${CWD}/codex-stub\" node \"${PLUGIN_DIR}/scripts/ledger.mjs\" review",
+      "cd \"${CWD}/story-charts-step1\" && LEDGER_SESSION_ID=\"${SESSION_ID}\" node \"${PLUGIN_DIR}/scripts/ledger.mjs\" review dismiss fd-any wrong \"not a bug\" || true"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "cd ${CWD}/story-charts-step1 && git push origin HEAD"
+    }
+  }
+}

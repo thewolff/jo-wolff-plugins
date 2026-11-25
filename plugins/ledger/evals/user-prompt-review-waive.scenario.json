@@ -1,0 +1,18 @@
+{
+  "$comment": "A prompt that is one `review waive` line, typed by the human, records a waived row for HEAD and says so as systemMessage (0.4.12).",
+  "event": "UserPromptSubmit",
+  "expect": "systemMessage",
+  "reason": "waived the review gate",
+  "setup": {
+    "commands": [
+      "git -c user.name=t -c user.email=t@t -C \"${CWD}\" commit -q --allow-empty -m init"
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "review waive prototype, the human said push it"
+  }
+}

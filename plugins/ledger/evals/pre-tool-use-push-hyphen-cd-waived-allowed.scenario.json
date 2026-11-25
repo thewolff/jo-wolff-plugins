@@ -1,9 +1,12 @@
 {
-  "$comment": "Sibling of pre-tool-use-push-hyphen-cd-unreviewed-denied: the same literal hyphenated `cd`, once that HEAD is waived, goes through silently.",
+  "$comment": "Sibling of pre-tool-use-push-hyphen-cd-unreviewed-denied: the same literal hyphenated `cd`, once the human has waived that HEAD by typing the waive as a prompt (0.4.12: the user-prompt hook is the only channel a waive is applied from), goes through silently.",
   "event": "PreToolUse",
   "expect": "silent",
   "sibling": "pre-tool-use-push-hyphen-cd-unreviewed-denied.scenario.json",
   "setup": {
+    "files": {
+      "waive-prompt.json": "{\"session_id\": \"${SESSION_ID}\", \"cwd\": \"${CWD}/story-charts-step1\", \"hook_event_name\": \"UserPromptSubmit\", \"prompt\": \"review waive --in ${CWD}/story-charts-step1 \\\"prototype, the human said push it\\\"\"}"
+    },
     "commands": [
       "git -c user.name=t -c user.email=t@t -C \"${CWD}\" commit -q --allow-empty -m init",
       "LEDGER_SESSION_ID=\"${SESSION_ID}\" node \"${PLUGIN_DIR}/scripts/ledger.mjs\" note \"pushing the change\"",
@@ -12,7 +15,7 @@
       "echo one > \"${CWD}/story-charts-step1/a.txt\"",
       "git -C \"${CWD}/story-charts-step1\" add a.txt",
       "git -c user.name=t -c user.email=t@t -C \"${CWD}/story-charts-step1\" commit -q -m one",
-      "cd \"${CWD}/story-charts-step1\" && LEDGER_SESSION_ID=\"${SESSION_ID}\" node \"${PLUGIN_DIR}/scripts/ledger.mjs\" review waive \"prototype, the human said push it\""
+      "node \"${PLUGIN_DIR}/hooks/user-prompt.mjs\" < \"${CWD}/waive-prompt.json\""
     ]
   },
   "stdin": {

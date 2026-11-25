@@ -332,7 +332,7 @@ test("review loop: at review.maxRounds the next round stops and says to ask the 
   const b = repo({ maxRounds: 1 });
   const bin = stub(b, "codex", "1. [should] a.txt:1 x");
   const one = review(b, [], { LEDGER_REVIEW_BIN_CODEX: bin });
-  assert.match(one.out, /^round 1 of 1 reached: ask the human whether to waive \(`.*review waive "<why>"`\) or continue with `.*review --force-round`\.$/m);
+  assert.match(one.out, /^round 1 of 1 reached: ask the human: they can type `review waive --in \S+ --head [0-9a-f]{40} "<their reason>"` as their whole prompt in a Claude Code session, or you continue with `.*review --force-round`\.$/m);
   commit(b, "e.txt", "e\n");
   const stopped = review(b, [], { LEDGER_REVIEW_BIN_CODEX: bin });
   assert.equal(stopped.code, 1);

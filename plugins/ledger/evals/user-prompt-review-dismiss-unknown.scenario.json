@@ -1,0 +1,19 @@
+{
+  "$comment": "A typed `review dismiss` of an id the ledger has never stored is refused, and the refusal reaches the human as systemMessage (0.4.12).",
+  "event": "UserPromptSubmit",
+  "expect": "systemMessage",
+  "reason": "no finding fd-nope",
+  "setup": {
+    "commands": [
+      "git -c user.name=t -c user.email=t@t -C \"${CWD}\" commit -q --allow-empty -m init",
+      "node \"${PLUGIN_DIR}/scripts/ledger.mjs\" pending --cwd \"${CWD}\""
+    ]
+  },
+  "stdin": {
+    "session_id": "${SESSION_ID}",
+    "transcript_path": "${TRANSCRIPT}",
+    "cwd": "${CWD}",
+    "hook_event_name": "UserPromptSubmit",
+    "prompt": "review dismiss fd-nope wrong not a bug"
+  }
+}
