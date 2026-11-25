@@ -207,7 +207,7 @@ export function defaultBase(db, top, head, branch) {
     }
   }
   if (branch) {
-    const first = db.prepare("SELECT base_ref FROM cc_reviews WHERE cwd = ? AND branch = ? AND lab <> ? AND base_ref IS NOT NULL ORDER BY at ASC, id ASC LIMIT 1").get(top, branch, META_LAB);
+    const first = db.prepare("SELECT base_ref FROM cc_reviews WHERE cwd = ? AND branch = ? AND lab <> ? AND base_ref IS NOT NULL ORDER BY id ASC LIMIT 1").get(top, branch, META_LAB);
     if (first?.base_ref === ROOT_BASE) return null;
     if (first) {
       try {
@@ -229,30 +229,107 @@ export function defaultBase(db, top, head, branch) {
 // branch's later reviews keep counting from the root instead of from the root commit.
 export const ROOT_BASE = EMPTY_TREE;
 
-function insertRow(db, dbPath, r) {
-  transaction(
-    db,
-    () => {
-      db.prepare("INSERT INTO cc_reviews (session_id, cwd, head_sha, base_ref, branch, lab, model, verdict, findings, findings_json, reason, at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(
-        r.sessionId ?? null,
-        r.cwd,
-        r.head,
-        r.base ?? null,
-        r.branch ?? null,
-        r.lab,
-        r.model ?? null,
-        r.verdict,
-        r.findings ?? null,
-        r.items?.length ? JSON.stringify(r.items) : null,
-        r.reason ?? null,
-        r.at,
-      );
-    },
-    dbPath,
+/** The bare insert, for use inside a transaction that is already open; returns the new row's id. */
+function insertRowTx(db, r) {
+  const res = db.prepare("INSERT INTO cc_reviews (session_id, cwd, head_sha, base_ref, branch, lab, model, verdict, findings, findings_json, reason, at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(
+    r.sessionId ?? null,
+    r.cwd,
+    r.head,
+    r.base ?? null,
+    r.branch ?? null,
+    r.lab,
+    r.model ?? null,
+    r.verdict,
+    r.findings ?? null,
+    r.items?.length ? JSON.stringify(r.items) : null,
+    r.reason ?? null,
+    r.at,
   );
+  return Number(res.lastInsertRowid);
+}
+
+/** One row in its own write transaction (the waive, addressed and other meta rows). */
+function insertRow(db, dbPath, r) {
+  return transaction(db, () => insertRowTx(db, r), dbPath);
 }
 
 const short = (sha) => String(sha).slice(0, 8);
+
+/**
+ * The findings text of a lab row, rendered from its items (0.4.12): every open item as
+ * `<n>. [<severity>] <id>: <text>` (a `fault-tolerance:` kind after the id, continuation lines
+ * indented, the item's `note` in parentheses), then one `dismissed: <id> (<disposition>, at
+ * <sha8>)` line per dismissed item. "" when nothing is open or dismissed. The review output, the
+ * push denial and `review status` all print this stored text, so the id a person reads is the id
+ * that is stored.
+ */
+export function findingsText(items) {
+  const lines = [];
+  let n = 0;
+  for (const i of items ?? []) {
+    if (i.resolved) continue;
+    const [first, ...more] = String(i.text ?? "").split("\n");
+    const body = [`${++n}. [${i.severity}] ${i.id ? `${i.id}: ` : ""}${i.kind ? `${i.kind}: ` : ""}${first}`, ...more.map((l) => `   ${l}`)].join("\n");
+    lines.push(i.note ? `${body} (${i.note})` : body);
+  }
+  for (const i of items ?? []) if (i.dismissed) lines.push(`dismissed: ${i.id} (${i.dismissed.disposition}, at ${short(i.dismissed.sha)})`);
+  return lines.join("\n");
+}
+
+const DISMISSED_SUFFIX = /; (\d+|all) dismissed$/;
+
+/**
+ * A lab row made consistent with its items (0.4.12): a row with items stores
+ * `findingsText(items)` as its findings; a row where any item carries `dismissed` also gets its
+ * verdict re-derived (verdictOf) and its reason a `; <n> dismissed` (or `; all dismissed`)
+ * suffix. A row with no items (pass, unavailable) is returned as it is. The only place a lab
+ * row's verdict and findings text are derived from items.
+ */
+export function settle(row) {
+  const items = row.items ?? [];
+  if (!items.length) return row;
+  const out = { ...row, findings: findingsText(items) || null };
+  const dismissed = items.filter((i) => i.dismissed).length;
+  if (dismissed) {
+    out.verdict = verdictOf(items);
+    const base = String(row.reason ?? "").replace(DISMISSED_SUFFIX, "");
+    const tail = items.some((i) => !i.resolved) ? `${dismissed} dismissed` : "all dismissed";
+    out.reason = base ? `${base}; ${tail}` : tail;
+  }
+  return out;
+}
+
+/**
+ * Inside an open transaction: mark the row's items that a dismissal covers (one on the row's own
+ * sha, or one in `eligible`, the ancestor dismissals that passed the carry test before the
+ * transaction), settle the row, insert it, and return the stored row with its `id`.
+ */
+function publishLabRowTx(db, row, { eligible = new Set() } = {}) {
+  let items = (row.items ?? []).map((i) => ({ ...i }));
+  const ids = items.filter((i) => i.id && !i.resolved).map((i) => i.id);
+  if (ids.length && row.lab !== META_LAB) {
+    const found = db
+      .prepare(`SELECT * FROM cc_dismissals WHERE cwd = ? AND lab = ? AND finding_id IN (${ids.map(() => "?").join(",")}) ORDER BY at, id`)
+      .all(row.cwd, row.lab, ...ids);
+    for (const d of found) {
+      if (d.head_sha !== row.head && !eligible.has(d.id)) continue;
+      items = items.map((i) => (i.id === d.finding_id && !i.resolved ? { ...i, resolved: true, dismissed: { id: d.id, disposition: d.disposition, by: d.by, at: d.at, sha: d.head_sha } } : i));
+    }
+  }
+  const settled = settle({ ...row, items });
+  const id = insertRowTx(db, settled);
+  return { ...settled, id };
+}
+
+/**
+ * Publish one lab row: every writer of a lab row (a review's record, the carried rows, the rows
+ * `addressed` writes, a dismissal's superseding row) goes through here, so a dismissal committed
+ * by another writer is reconciled under the same write lock. Returns the stored row; callers
+ * print and decide from it, never from the row they passed in.
+ */
+export function publishLabRow(db, dbPath, row, opts = {}) {
+  return transaction(db, () => publishLabRowTx(db, row, opts), dbPath);
+}
 
 /** A row's findings items (from findings_json); [] when none. */
 export function rowItems(row) {
@@ -279,7 +356,7 @@ export function branchRounds(db, top, base, head) {
     shas = new Set();
   }
   const groups = new Map();
-  for (const r of db.prepare("SELECT * FROM cc_reviews WHERE cwd = ? AND lab <> ? ORDER BY at ASC, id ASC").all(top, META_LAB)) {
+  for (const r of db.prepare("SELECT * FROM cc_reviews WHERE cwd = ? AND lab <> ? ORDER BY id ASC").all(top, META_LAB)) {
     if (!shas.has(r.head_sha)) continue;
     if (!groups.has(r.head_sha)) groups.set(r.head_sha, []);
     groups.get(r.head_sha).push(r);
@@ -353,7 +430,7 @@ export function outstanding(db, top, rounds, head) {
     return known.get(key);
   };
   const roundOfSha = new Map(rounds.map((r) => [r.sha, r.round]));
-  const rows = rounds.flatMap((r) => r.rows).sort((x, y) => (x.at === y.at ? x.id - y.id : x.at < y.at ? -1 : 1));
+  const rows = rounds.flatMap((r) => r.rows).sort((x, y) => x.id - y.id);
   const byLab = new Map();
   for (const row of rows) {
     if (row.verdict === "unavailable") continue;
@@ -362,8 +439,8 @@ export function outstanding(db, top, rounds, head) {
   }
   const addressedAfter = (row) =>
     db
-      .prepare("SELECT head_sha FROM cc_reviews WHERE cwd = ? AND lab = ? AND verdict = 'addressed' AND (at > ? OR (at = ? AND id > ?))")
-      .all(top, META_LAB, row.at, row.at, row.id)
+      .prepare("SELECT head_sha FROM cc_reviews WHERE cwd = ? AND lab = ? AND verdict = 'addressed' AND id > ?")
+      .all(top, META_LAB, row.id)
       .some((a) => isAncestor(row.head_sha, a.head_sha) && isAncestor(a.head_sha, head));
   const out = new Map();
   for (const [lab, entry] of byLab) {
@@ -854,17 +931,19 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
   // or not run this time carries its findings onto this commit. Every finding keeps `since`, the
   // head of the round that first raised it (0.4.6), so the judge sees every change since then.
   const owed = outstanding(db, top, rounds, head);
+  // The findings text of every row is rendered from its items when it is published (settle), so
+  // the carried annotation lives on the item as `note`.
   const carried = (entry, reason) => ({
     verdict: "findings",
-    items: entry.items.map((it) => ({ ...it, since: it.since ?? entry.row.head_sha })),
-    findings: entry.items.map((it, k) => `${k + 1}. ${itemLine(it)} (from round ${entry.round})`).join("\n"),
+    items: entry.items.map((it) => ({ ...it, since: it.since ?? entry.row.head_sha, note: `from round ${entry.round}` })),
     model: entry.row.model,
     reason,
   });
   const out = [`review of ${short(head)} (${range}) in ${top}, round ${round} of ${max}${round > max ? " (forced)" : ""}:`];
   let anyFindings = false;
-  const record = (lab, r, judged = [], fromRound = null) => {
-    insertRow(db, dbPath, { sessionId, cwd: top, head, base: branchBase ?? ROOT_BASE, branch, lab, model: r.model, verdict: r.verdict, findings: r.findings, items: r.items, reason: r.reason ?? null, at: nowIso(now()) });
+  const record = (lab, given, judged = [], fromRound = null) => {
+    const stored = publishLabRow(db, dbPath, { sessionId, cwd: top, head, base: branchBase ?? ROOT_BASE, branch, lab, model: given.model, verdict: given.verdict, findings: given.findings, items: given.items, reason: given.reason ?? null, at: nowIso(now()) });
+    const r = { ...stored, carried: given.carried };
     const model = r.model ? ` (${r.model})` : "";
     if (r.verdict === "findings") {
       anyFindings = true;
@@ -906,10 +985,9 @@ export async function runReview({ db, dbPath, cwd, env = process.env, config, la
     const dropped = before ? before.items.filter((it) => !stillListed(it, r.items ?? [])) : [];
     if (dropped.length) {
       judged.push(...(await judgeItems({ db, dbPath, config, env, top, fromSha: before.row.head_sha, toSha: head, items: dropped, receipt: receipt.text, receiptSha, receiptUnreadable: Boolean(receipt.unreadable) })));
-      const items = [...(r.items ?? []), ...judged];
-      const stillOpen = judged.filter((it) => it.judge === "no");
-      const findings = stillOpen.length ? [r.findings, ...stillOpen.map((it, k) => `${(r.items?.length ?? 0) + k + 1}. ${itemLine(it)} (from round ${before.round}; the judge says it is not resolved)`)].filter(Boolean).join("\n") : r.findings;
-      r = { ...r, items, findings, verdict: verdictOf(items) };
+      const noted = judged.map((it) => (it.judge === "no" ? { ...it, note: `from round ${before.round}; the judge says it is not resolved` } : it));
+      const items = [...(r.items ?? []), ...noted];
+      r = { ...r, items, verdict: verdictOf(items) };
     }
     record(lab, r, judged, before?.round);
   }
@@ -983,8 +1061,7 @@ export async function addressed({ db, dbPath, cwd, reason, config = {}, env = pr
   if (rejected.length) {
     const out = [`refused the judge says these findings on ${sources} are not resolved by ${short(head)}; the gate stays closed:`];
     for (const { row, items } of rejected) {
-      const open = items.filter((i) => i.judge === "no");
-      insertRow(db, dbPath, {
+      const stored = publishLabRow(db, dbPath, {
         sessionId,
         cwd: top,
         head,
@@ -993,12 +1070,12 @@ export async function addressed({ db, dbPath, cwd, reason, config = {}, env = pr
         lab: row.lab,
         model: row.model,
         verdict: "findings",
-        findings: open.map((i, k) => `${k + 1}. ${itemLine(i)}`).join("\n"),
         items,
         reason: `addressed claimed: ${why}; the judge said no`,
         at,
       });
-      for (const i of open) out.push(`${row.lab}: ${itemLine(i)}`);
+      // Printed from the stored row: a finding dismissed on this commit in the meantime is not blocking.
+      for (const i of stored.items.filter((x) => !x.resolved && x.judge === "no")) out.push(`${row.lab}: ${itemLine(i)}`);
     }
     return { code: 1, text: out.join("\n") };
   }
@@ -1017,14 +1094,14 @@ export async function addressed({ db, dbPath, cwd, reason, config = {}, env = pr
  */
 export function headState(db, top, head) {
   const rows = top
-    ? db.prepare("SELECT * FROM cc_reviews WHERE cwd = ? AND head_sha = ? ORDER BY at ASC, id ASC").all(top, head)
-    : db.prepare("SELECT * FROM cc_reviews WHERE head_sha = ? ORDER BY at ASC, id ASC").all(head);
+    ? db.prepare("SELECT * FROM cc_reviews WHERE cwd = ? AND head_sha = ? ORDER BY id ASC").all(top, head)
+    : db.prepare("SELECT * FROM cc_reviews WHERE head_sha = ? ORDER BY id ASC").all(head);
   const waivedRow = rows.findLast((r) => r.verdict === "waived");
   const lastAddressed = rows.findLast((r) => r.verdict === "addressed");
   const latest = new Map();
   for (const r of rows) if (r.lab !== META_LAB) latest.set(r.lab, r);
   const labRows = [...latest.values()];
-  const findings = labRows.filter((r) => r.verdict === "findings" && (!lastAddressed || r.at > lastAddressed.at || (r.at === lastAddressed.at && r.id > lastAddressed.id)));
+  const findings = labRows.filter((r) => r.verdict === "findings" && (!lastAddressed || r.id > lastAddressed.id));
   const nits = labRows.filter((r) => r.verdict === "pass-with-nits");
   const unavailable = labRows.filter((r) => r.verdict === "unavailable");
   const unverifiedFrom = (row) => rowItems(row).filter((i) => i.judge === "unverified");

@@ -46,8 +46,8 @@ test("a version 10 store from the other line's migration 10 (no branch columns) 
   before.close();
 
   const { db } = open(p);
-  assert.equal(storeVersion(db), 11);
-  assert.equal(SCHEMA_VERSION, 11);
+  assert.equal(storeVersion(db), 12);
+  assert.equal(SCHEMA_VERSION, 12);
   for (const c of BRANCH_COLUMNS) assert.ok(columnsOf(db, "cc_owed").includes(c), `cc_owed.${c} missing`);
   assert.ok(columnsOf(db, "cc_sessions").includes("last_advise_block_prompt"));
   assert.ok(indexExists(db, "cc_owed_open_branch"));
@@ -83,7 +83,7 @@ test("a version 10 store from this line's migration 10 opens at 11 and gains onl
   const box = sandbox();
   const p = v10Store(box, "this-line", MIGRATIONS[9]);
   const { db } = open(p);
-  assert.equal(storeVersion(db), 11);
+  assert.equal(storeVersion(db), 12);
   assert.ok(columnsOf(db, "cc_sessions").includes("last_advise_block_prompt"));
   for (const c of BRANCH_COLUMNS) assert.ok(columnsOf(db, "cc_owed").includes(c));
   assert.deepEqual(missingSchema(db), []);
@@ -111,7 +111,7 @@ test("doctor fails the schema check with the missing column names when the versi
   const r = cli(box, ["doctor"]);
   assert.match(
     r.out,
-    /^fail +schema: version 11, but missing cc_owed\.repo, cc_owed\.git_dir, cc_owed\.branch, cc_owed\.head_sha, cc_owed\.branch_state, cc_owed\.checked_at, index cc_owed_open_branch$/m,
+    /^fail +schema: version 12, but missing cc_owed\.repo, cc_owed\.git_dir, cc_owed\.branch, cc_owed\.head_sha, cc_owed\.branch_state, cc_owed\.checked_at, index cc_owed_open_branch$/m,
     r.out,
   );
   const db = new DatabaseSync(box.env.LEDGER_DB, { readOnly: true });
@@ -119,9 +119,9 @@ test("doctor fails the schema check with the missing column names when the versi
   db.close();
 });
 
-test("doctor prints `ok schema: version 11` on a fresh store", () => {
+test("doctor prints `ok schema: version 12` on a fresh store", () => {
   const box = sandbox();
   cli(box, ["note", "seed"]);
   const r = cli(box, ["doctor"]);
-  assert.match(r.out, /^ok +schema: version 11$/m, r.out);
+  assert.match(r.out, /^ok +schema: version 12$/m, r.out);
 });
