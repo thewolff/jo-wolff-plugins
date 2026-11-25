@@ -4,6 +4,43 @@ All notable changes to ledger are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Entries before 0.2.1 are the
 "Changes" section of the README (one line per version).
 
+## 0.4.12 - 2026-11-24
+
+### Added
+
+- `review dismiss <fd-id> wrong|intentional|doesnt-matter "<why>"`: the human dismisses one
+  finding on HEAD with a disposition and a reason, typed as their whole prompt. It records a
+  `cc_dismissals` row and republishes the lab's latest row with the finding marked dismissed, so
+  the gate re-reads it; the reply names the gate's state after it. It is refused for an empty,
+  placeholder, flag-like or over-long reason, a finding no longer listed, already dismissed or
+  resolved, and a finding on an older commit. The state is re-read inside the write transaction,
+  so a review published concurrently cannot be erased.
+- Finding ids: every finding carries an `fd-` id and the time it was first raised, kept across
+  rounds while the same lab raises the same finding at any severity. `review status` and the
+  push denial print the dismiss line for each open blocking or should finding.
+- Carry-forward: a dismissal applies to a later commit only when the lab raises the same finding
+  again and every file it cites resolves to one path at both commits and is unchanged; otherwise
+  the finding reopens and the review output says why.
+- `cc_dismissals` (schema 12): one row per dismissed finding and commit; `via` can only be
+  `prompt-hook`.
+- `report` counts findings raised (once each, in the window its first raising falls in) and
+  dismissed per lab by disposition, and lists every dismissal in the window.
+- `review waive --in <folder> --head <sha>`: the human names the repository and commit to waive;
+  a stale `--head` is refused with the current sha.
+
+### Changed
+
+- `review waive` and `review dismiss` are applied only when the human types them as a prompt in a
+  Claude Code session (the UserPromptSubmit hook, `via = prompt-hook`). The CLI refuses both, in
+  argv or on stdin and with `--help` or `--by`, with exit 1 before the store opens, and prints the
+  line for the human to type. A prompt that mixes either line with prose applies nothing and says
+  so.
+- Every way-out text (the findings and no-review denials, both round-cap texts, the plugin gate,
+  the `next:` line) now says to ask the human to type the waive or dismiss line, with the folder
+  and commit filled in, and never tells the agent to run it.
+- Scripts that call `review waive` now stop at it.
+- Review rows are ordered by insertion `id` wherever the latest row is read.
+
 ## 0.4.11 - 2026-11-20
 
 ### Fixed
