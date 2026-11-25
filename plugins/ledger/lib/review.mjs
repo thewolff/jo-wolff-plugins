@@ -459,9 +459,21 @@ function quotedSpans(text) {
  * failure reopens. Returns { ok: true, paths } or { ok: false, why }.
  */
 export function citedPaths(top, fromSha, toSha, texts) {
-  const tracked = new Map(); // NFC path → the path as git spells it
+  // NFC path → every spelling git tracks under it, in either commit. A key that names two files in
+  // the same commit (`café` in NFC and in NFD) is ambiguous: a citation of it does not carry.
+  const tracked = new Map();
+  const ambiguousKeys = new Set();
   try {
-    for (const sha of [fromSha, toSha]) for (const p of git(top, ["ls-tree", "-r", "-z", "--name-only", sha]).split("\0").filter(Boolean)) tracked.set(p.normalize("NFC"), p);
+    for (const sha of [fromSha, toSha]) {
+      const inSha = new Map();
+      for (const p of git(top, ["ls-tree", "-r", "-z", "--name-only", sha]).split("\0").filter(Boolean)) {
+        const key = p.normalize("NFC");
+        if (!tracked.has(key)) tracked.set(key, new Set());
+        tracked.get(key).add(p);
+        if (inSha.has(key) && inSha.get(key) !== p) ambiguousKeys.add(key);
+        inSha.set(key, p);
+      }
+    }
   } catch {
     return { ok: false, why: "could not be checked (git failed)" };
   }
@@ -542,7 +554,8 @@ export function citedPaths(top, fromSha, toSha, texts) {
     for (const c of candidates) {
       if (c.pass > 0 && resolvedRanges.some(([s0, e0]) => c.start >= s0 && c.end <= e0)) continue;
       const r = resolve(c.value);
-      if (r.path) {
+      if (r.path && ambiguousKeys.has(r.path)) block("cites an ambiguous path");
+      else if (r.path) {
         resolved.add(r.path);
         resolvedHere.add(c.value);
         resolvedRanges.push([c.start, c.end]);
@@ -559,7 +572,7 @@ export function citedPaths(top, fromSha, toSha, texts) {
   }
   if (blocked) return { ok: false, why: blocked };
   if (!resolved.size) return { ok: false, why: "cites no path that resolves" };
-  const gitPaths = [...resolved].map((p) => tracked.get(p));
+  const gitPaths = [...resolved].flatMap((p) => [...tracked.get(p)]);
   try {
     const f = git(top, ["diff", "--name-status", "-z", "-M", "--no-ext-diff", fromSha, toSha]).split("\0");
     for (let i = 0; i < f.length; ) {
