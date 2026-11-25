@@ -1012,6 +1012,7 @@ fault inputs).
 - A shell-capable agent can still forge the human path for `review waive` and `review dismiss`: it could pipe crafted JSON into `hooks/user-prompt.mjs`, or write to the SQLite file directly. The lock stops the documented verbs and every CLI call, not deliberate forgery. Every dismissal and waive row carries its session, and `report` lists each one with its reason, so a reason the human never typed shows in the weekly digest.
 - The human can no longer waive or dismiss from a plain terminal, and an OMP session does not run ledger's UserPromptSubmit hook, so a human working only in OMP has no way to apply either verb.
 - A handed-over script that does not stop on its first failure runs its push after the refused waive. That push was never gated, but no `waived` row records it now.
+- Two `review` runs of the same commit that overlap can each give the same newly raised finding its own `fd-` id, because each assigns ids from the history it read before the other published. A `review dismiss` of the first id does not cover the second, so when the second run publishes, that finding is open again and the gate stays shut until it is dismissed a second time. It never opens the gate. Run one review of a commit at a time.
 
 ## Developing
 
