@@ -390,10 +390,13 @@ export function judgePrompt(s) {
 /**
  * One judge call per statement, in order, each clamped to what is left of `budgetMs` counted from
  * `startedAt`. Returns the findings ([{ statement, why }]) for fail and unverified answers; a
- * dispatch error is one skipped.log line and no finding. Never throws.
+ * dispatch error is one skipped.log line and no finding; a line that could not be written is pushed
+ * onto `unlogged` instead, for the caller to surface. Never throws.
  */
-export async function judgeStage(statements, judge, { env = process.env, startedAt = Date.now(), budgetMs, marginMs = 2_000, run = runJudge, hook = HOOK_FILE } = {}) {
-  const skip = (text) => logSkipped(text, env, new Date(), hook);
+export async function judgeStage(statements, judge, { env = process.env, startedAt = Date.now(), budgetMs, marginMs = 2_000, run = runJudge, hook = HOOK_FILE, unlogged = [] } = {}) {
+  const skip = (text) => {
+    if (!logSkipped(text, env, new Date(), hook)) unlogged.push(text);
+  };
   const findings = [];
   for (const s of statements) {
     const remaining = budgetMs - (Date.now() - startedAt) - marginMs;

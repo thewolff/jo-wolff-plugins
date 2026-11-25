@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   HOOK_FILE,
@@ -330,6 +330,21 @@ test("judgePrompt with a record: the exact bytes jev-judge's shape.ts parses, th
     RECORD_INTRO,
     "Session record for this receipt (the tool calls the statement names, as the session transcript holds them, output bounded; it is what the command printed or the page returned, not the agent's account of it):",
   );
+});
+
+test("judgeStage: a dispatch error whose skipped.log line cannot be written goes onto opts.unlogged; never throws", { skip: process.getuid?.() === 0 ? "root ignores modes" : false }, async () => {
+  const box = sandbox();
+  mkdirSync(box.env.XDG_STATE_HOME, { recursive: true });
+  chmodSync(box.env.XDG_STATE_HOME, 0o500);
+  const unlogged = [];
+  try {
+    const findings = await judgeStage([{ label: "CLAIM", line: 1, text: "x at /a/b:1" }], { command: "j", timeoutMs: 1000, source: "test" }, { env: box.env, budgetMs: 10_000, run: async () => ({ error: "nonzero", detail: "exit 2" }), unlogged });
+    assert.deepEqual(findings, []);
+  } finally {
+    chmodSync(box.env.XDG_STATE_HOME, 0o700);
+  }
+  assert.equal(unlogged.length, 1);
+  assert.match(unlogged[0], /^line 1 \*\*CLAIM\*\* "x at \/a\/b:1" judge nonzero: exit 2 \(source=test\)$/);
 });
 
 // ─── skipped.log names the hook ─────────────────────────────────────────────────────────

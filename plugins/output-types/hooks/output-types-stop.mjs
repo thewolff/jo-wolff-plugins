@@ -235,13 +235,16 @@ export async function handle(input, { env = process.env, startedAt = runnerStart
     const budget = budgetMs ?? (Number(env.HOOK_RUNNER_DEADLINE_MS) || Number(env.OUTPUT_TYPES_STOP_DEADLINE_MS) || JUDGE_DEADLINE_MS);
     if (judge) {
       const toJudge = withRecords(receipted, session, { env, hook: src.hook, unlogged });
-      findings.push(...(await judgeStage(toJudge, judge, { env, startedAt, budgetMs: budget, run, hook: src.hook })));
-    } else logSkipped(noJudgeReason(env), env, new Date(), src.hook);
+      findings.push(...(await judgeStage(toJudge, judge, { env, startedAt, budgetMs: budget, run, hook: src.hook, unlogged })));
+    } else {
+      const reason = noJudgeReason(env);
+      if (!logSkipped(reason, env, new Date(), src.hook)) unlogged.push(reason);
+    }
   }
   findings.sort((a, b) => a.statement.line - b.statement.line);
   // A skip that skipped.log could not hold is the runner's failed-open case: one errors.log line
   // (which may fail too, in the same directory) and a systemMessage carrying the reasons themselves.
-  const failed = unlogged.length ? `skipped.log could not be written (${skippedLogPath(env)}); ${unlogged.length} statement${unlogged.length === 1 ? "" : "s"} not judged: ${unlogged.join("; ")}` : null;
+  const failed = unlogged.length ? `skipped.log could not be written (${skippedLogPath(env)}); ${unlogged.length} skip line${unlogged.length === 1 ? "" : "s"} not recorded: ${unlogged.join("; ")}` : null;
   if (failed) logError("output-types", src.event, failed, env);
   const message = [failed && `output-types ${src.event} failed open: ${failed}`, renderWarning(findings)].filter(Boolean).join("\n");
   return message ? { systemMessage: message } : null;

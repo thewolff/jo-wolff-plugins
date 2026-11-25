@@ -223,6 +223,23 @@ test("judge on, no command anywhere → the mechanical result only; nothing logg
   assert.match(lines[0], /^\S+Z hooks\/output-types-stop\.mjs judge not run: judge is on but no command is configured; looked in: env OUTPUT_TYPES_JUDGE_BIN, judgeCommand in /);
 });
 
+test("judge on, no command configured, state dir unwritable → exit 0, and the failed-open systemMessage carries the no-judge reason skipped.log could not hold", { skip: process.getuid?.() === 0 ? "root ignores modes" : false }, () => {
+  const box = sandbox();
+  const dir = configDir(box, { judge: true });
+  mkdirSync(box.env.XDG_STATE_HOME, { recursive: true });
+  chmodSync(box.env.XDG_STATE_HOME, 0o500);
+  let r;
+  try {
+    r = runStop(box, { input: stopPayload(box, transcript(box, RECEIPTED)), env: { XDG_CONFIG_HOME: dir } });
+  } finally {
+    chmodSync(box.env.XDG_STATE_HOME, 0o700);
+  }
+  assertAllows(r);
+  assert.ok(r.json, `expected JSON output, got ${JSON.stringify(r.stdout)}`);
+  assert.match(r.json.systemMessage, /^output-types Stop failed open: skipped\.log could not be written/);
+  assert.match(r.json.systemMessage, /judge not run: judge is on but no command is configured/);
+});
+
 test("judge on, shared judge file malformed (legacy profile present) → the judge does not run and one skipped.log line names the malformed file", () => {
   const box = sandbox();
   const dir = configDir(box, { judge: true });
