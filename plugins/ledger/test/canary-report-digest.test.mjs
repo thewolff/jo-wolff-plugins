@@ -765,3 +765,26 @@ test("report: dismissals past FINDING_ROWS_MAX are counted in full but listed on
   assert.match(text, new RegExp(`^dismissals: ${n} \\(the oldest ${n - FINDING_ROWS_MAX} past ${FINDING_ROWS_MAX} are not listed\\)$`, "m"));
   assert.equal(text.split("\n").filter((l) => / codex fd-\d+ (wrong|intentional) · /.test(l)).length, FINDING_ROWS_MAX);
 });
+
+test("report: a lab row whose findings_json does not parse, or is not a list, is skipped and named; healthy rows still count, and no marker shows when nothing was skipped", () => {
+  const b = sandbox();
+  const db = openDb(b);
+  const at = nowIso(Date.now() - D);
+  const ins = db.prepare("INSERT INTO cc_reviews (cwd, head_sha, branch, lab, verdict, findings_json, at) VALUES (?,?,?,?,?,?,?)");
+  ins.run(b.work, "aaaaaaa1111", "feat", "codex", "findings", JSON.stringify([{ id: "fd-good", severity: "should", text: "a.txt:1 x", raisedAt: at }]), at);
+  const healthy = render(withStore(b, (s) => gather(s.db, { since: "7d" })));
+  assert.doesNotMatch(healthy, /could not be read/);
+  // The column's CHECK (json_valid) refuses unparseable JSON; a file written past it (another tool,
+  // a hand edit) is simulated with the CHECK switched off for one insert.
+  db.exec("PRAGMA ignore_check_constraints = ON");
+  const bad = ins.run(b.work, "bbbbbbb2222", "feat", "kimi", "findings", "{not json", at).lastInsertRowid;
+  db.exec("PRAGMA ignore_check_constraints = OFF");
+  const obj = ins.run(b.work, "ccccccc3333", "feat", "codex", "findings", '{"id":"fd-x"}', at).lastInsertRowid;
+  const nul = ins.run(b.work, "ddddddd4444", "feat", "codex", "findings", "null", at).lastInsertRowid;
+  db.close();
+  const data = withStore(b, (s) => gather(s.db, { since: "7d" }));
+  assert.deepEqual(data.findings.labs.map((l) => [l.lab, l.raised]), [["codex", 1]]);
+  assert.deepEqual(data.findings.skipped.map((r) => [r.id, r.lab, r.head_sha]), [[Number(bad), "kimi", "bbbbbbb2222"], [Number(obj), "codex", "ccccccc3333"], [Number(nul), "codex", "ddddddd4444"]]);
+  const text = render(data);
+  assert.match(text, new RegExp(`^lab rows whose findings could not be read: 3 \\(not counted above\\)\\n  #${bad} kimi bbbbbbb\\n  #${obj} codex ccccccc\\n  #${nul} codex ddddddd$`, "m"));
+});

@@ -46,17 +46,24 @@ export const DISPOSITION_NAMES = ["wrong", "intentional", "doesnt-matter"];
  * FINDING_ROWS_MAX lab rows (`cut` when the limit cut); dismissals are the cc_dismissals rows in
  * the window (a carried dismissal writes no row, so it is not counted twice), counted in full by
  * lab and disposition and listed newest first up to FINDING_ROWS_MAX (`dismissalCount` is the
- * whole count, `dismissalsCut` when the list was cut).
+ * whole count, `dismissalsCut` when the list was cut). A row whose findings_json does not parse
+ * or is not a list is not counted and is named in `skipped` (id, lab, head_sha), so the counts say
+ * they are incomplete; it is one of the rows read, so the list has the same bound.
  */
 function gatherFindings(db, from) {
-  const rows = db.prepare("SELECT lab, findings_json FROM cc_reviews WHERE lab <> 'ledger' AND findings_json IS NOT NULL AND at >= ? ORDER BY id ASC LIMIT ?").all(from, FINDING_ROWS_MAX + 1);
+  const rows = db.prepare("SELECT id, lab, head_sha, findings_json FROM cc_reviews WHERE lab <> 'ledger' AND findings_json IS NOT NULL AND at >= ? ORDER BY id ASC LIMIT ?").all(from, FINDING_ROWS_MAX + 1);
   const cut = rows.length > FINDING_ROWS_MAX;
   const first = new Map(); // id → { lab, severity, raisedAt }
+  const skipped = [];
   for (const r of rows.slice(0, FINDING_ROWS_MAX)) {
-    let items = [];
+    let items = null;
     try {
       items = JSON.parse(r.findings_json);
     } catch {
+      items = null;
+    }
+    if (!Array.isArray(items)) {
+      skipped.push({ id: r.id, lab: r.lab, head_sha: r.head_sha });
       continue;
     }
     for (const i of items) if (i?.id && !first.has(i.id)) first.set(i.id, { lab: r.lab, severity: i.severity, raisedAt: i.raisedAt ?? null });
@@ -82,7 +89,7 @@ function gatherFindings(db, from) {
   const listed = db.prepare("SELECT id, finding_id, cwd, head_sha, lab, disposition, reason, at FROM cc_dismissals WHERE at >= ? ORDER BY at DESC, rowid DESC LIMIT ?").all(from, FINDING_ROWS_MAX + 1);
   const dismissalsCut = listed.length > FINDING_ROWS_MAX;
   const dismissals = listed.slice(0, FINDING_ROWS_MAX).map((r) => ({ ...r }));
-  return { cut, labs: [...labs.values()].sort((a, b) => a.lab.localeCompare(b.lab)), dismissals, dismissalCount, dismissalsCut };
+  return { cut, skipped, labs: [...labs.values()].sort((a, b) => a.lab.localeCompare(b.lab)), dismissals, dismissalCount, dismissalsCut };
 }
 
 /** The rows and counts of the window. Pure reads. */
@@ -203,6 +210,10 @@ export function render(data) {
   const f = data.findings ?? { cut: false, labs: [], dismissals: [] };
   lines.push(`findings per lab:${f.cut ? ` (the newest lab rows past ${FINDING_ROWS_MAX} in the window were not read)` : ""}${f.labs.length ? "" : " none"}`);
   for (const l of f.labs) lines.push(`  ${l.lab} raised ${l.raised} · dismissed ${l.dismissed} (${DISPOSITION_NAMES.map((d) => `${d} ${l.byDisposition[d] ?? 0}`).join(", ")})`);
+  if (f.skipped?.length) {
+    lines.push(`lab rows whose findings could not be read: ${f.skipped.length} (not counted above)`);
+    for (const r of f.skipped) lines.push(`  #${r.id} ${r.lab} ${String(r.head_sha).slice(0, 7)}`);
+  }
   const total = f.dismissalCount ?? f.dismissals.length;
   lines.push(`dismissals: ${total}${f.dismissalsCut ? ` (the oldest ${total - f.dismissals.length} past ${FINDING_ROWS_MAX} are not listed)` : ""}`);
   for (const d of f.dismissals) lines.push(`  ${d.at} ${d.head_sha.slice(0, 7)} ${d.lab} ${d.finding_id} ${d.disposition} · ${d.reason} · ${d.cwd}`);
