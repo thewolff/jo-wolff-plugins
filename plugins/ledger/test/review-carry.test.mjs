@@ -5,6 +5,7 @@
 
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { openDb } from "./helpers.mjs";
 import { repo, git, commit, stub, kimiStub, review, push, decision, denyText, typed, reviewRows, dismissals, openIds } from "./review-helpers.mjs";
 import { citedPaths, findingsText, gateDecision, headState, settle, verdictOf } from "../lib/review.mjs";
@@ -199,6 +200,29 @@ test("carry: an unquoted Unicode path and a quoted path with a space and the lin
   assert.deepEqual(citedPaths(b.work, head, head, ["`src/my file.ts:10` the handler swallows errors"]), { ok: true, paths: ["src/my file.ts"] });
   assert.deepEqual(citedPaths(b.work, head, head, ['"src/my file.ts:10" the handler swallows errors']), { ok: true, paths: ["src/my file.ts"] });
   assert.equal(again(mk({}, { "src/my file.ts": "x\n", "lib/file.ts": "y\n" }), "1. [should] `src/my file.ts:10` the handler swallows errors").carried, true);
+});
+
+test("carry: two tracked files whose paths differ only in Unicode normalization make the citation ambiguous; a change to the other spelling is not missed (round 2)", () => {
+  // Built in the index with update-index --cacheinfo, so no filesystem has to hold both spellings.
+  const b = mk();
+  const nfc = "docs/caf\u00e9.md";
+  const nfd = "docs/cafe\u0301.md";
+  const g = (...a) => git(b, "-c", "core.precomposeunicode=false", ...a);
+  const blob = (text) => spawnSync("git", ["-C", b.work, "hash-object", "-w", "--stdin"], { input: text, encoding: "utf8" }).stdout.trim();
+  g("update-index", "--add", "--cacheinfo", `100644,${blob("x\n")},${nfc}`);
+  g("update-index", "--add", "--cacheinfo", `100644,${blob("x\n")},${nfd}`);
+  g("commit", "-qm", "both spellings");
+  const from = git(b, "rev-parse", "HEAD");
+  assert.equal(g("ls-tree", "-r", "--name-only", "-z", from).split("\0").filter((p) => p.startsWith("docs/")).length, 2, "both spellings are tracked");
+  g("update-index", "--cacheinfo", `100644,${blob("changed\n")},${nfd}`);
+  g("commit", "-qm", "change the NFD spelling");
+  const to = git(b, "rev-parse", "HEAD");
+  for (const cite of [nfc, nfd]) assert.deepEqual(citedPaths(b.work, from, to, [`${cite}:1 the heading is wrong`]), { ok: false, why: "cites an ambiguous path" }, cite);
+  assert.deepEqual(citedPaths(b.work, from, from, [`${nfc}:1 the heading is wrong`]), { ok: false, why: "cites an ambiguous path" }, "ambiguous even when nothing changed");
+  // A single spelling still carries.
+  const one = mk({}, { [nfc]: "x\n" });
+  const h = git(one, "rev-parse", "HEAD");
+  assert.deepEqual(citedPaths(one.work, h, h, [`${nfd}:1 x`]), { ok: true, paths: [nfc] });
 });
 
 test("carry: an unquoted token with a tracked extension that resolves nowhere blocks the carry; a version number does not", () => {
