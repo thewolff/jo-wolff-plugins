@@ -27,14 +27,27 @@ import { openStore, makeCtx, resolveCwd } from "../lib/store.mjs";
 import { runBatch, formatBatch, batchJson, exitCodeFor, busyWord } from "../lib/batch.mjs";
 import { renderHelp, setEnabled } from "../lib/commands.mjs";
 import { renderDoctor, runDoctor } from "../lib/doctor.mjs";
-import { parseLine } from "../lib/parse.mjs";
-import { addressed, runReview, status as reviewStatus, waive } from "../lib/review.mjs";
+import { parseLine, stripComment, tokenize } from "../lib/parse.mjs";
+import { addressed, dismiss, HUMAN_VERBS, humanOnlyText, runReview, status as reviewStatus, waive } from "../lib/review.mjs";
 import { canaryStatus, gradeRun, install as canaryInstall, listRuns, parseCanaryArgs, prune as canaryPrune, renderPruneResult, renderRuns, runCanary } from "../lib/canary.mjs";
 import { parseReportArgs, runReport } from "../lib/report.mjs";
 import { install as digestInstall, parseDigestArgs, runDigest } from "../lib/digest.mjs";
 import { gateCheck, parseGateArgs } from "../lib/plugin-gate.mjs";
 import { cachedJudgement } from "../lib/ledger-judge.mjs";
 import { cliPath, invocation } from "../lib/inject.mjs";
+
+/**
+ * One input line read for the human's verbs only, with no store: { kind: "blank" }, or
+ * { verb: "dismiss" | "waive" | null, fields, text }. `fields` are the parsed line's when it parses.
+ */
+export function humanVerbLine(text, tokens = null) {
+  const toks = tokens ?? (stripComment(text) ? tokenize(stripComment(text)) : []);
+  if (!toks.length) return { kind: "blank", text, verb: null };
+  const verb = toks.length >= 2 && toks[0].toLowerCase() === "review" && HUMAN_VERBS.includes(toks[1].toLowerCase()) ? toks[1].toLowerCase() : null;
+  if (!verb) return { kind: "line", text, verb: null };
+  const parsed = parseLine(text, undefined, tokens);
+  return { kind: "line", text: parsed.text ?? text, verb, fields: parsed.kind === "command" ? parsed : {} };
+}
 
 /** Pull the CLI's own flags out of argv; everything else is the command. */
 export function splitCliFlags(argv) {
@@ -74,6 +87,23 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
     return 0;
   }
 
+  // `review dismiss` and `review waive` are the human's: applied only from a prompt they typed
+  // (hooks/user-prompt.mjs). From the CLI they are refused before the store is opened, so no
+  // agent call can create, migrate or write it; a batch of only such lines is refused whole.
+  const human = lines.map((l) => humanVerbLine(typeof l === "string" ? l : l.text, typeof l === "string" ? null : l.tokens));
+  const nonBlank = human.filter((h) => h.kind !== "blank");
+  if (nonBlank.length && nonBlank.every((h) => h.verb)) {
+    const results = human.map((h, i) =>
+      h.kind === "blank"
+        ? { line: i + 1, text: h.text, status: "skipped", id: null, message: "blank" }
+        : { line: i + 1, text: h.text, status: "refused", id: null, message: humanOnlyText(h.verb, h.fields, cwd) },
+    );
+    const batch = { results, applied: 0, refused: nonBlank.length, prose: 0 };
+    out((cli.json ? JSON.stringify(batchJson(batch), null, 2) : formatBatch(batch, { numbered })) + "\n");
+    return 1;
+  }
+  const humanLines = human.flatMap((h, i) => (h.verb ? [i + 1] : []));
+
   // `enable` and `disable` only write .ledger.json; they must work when the database cannot be
   // opened, since turning the hooks off is the way out of a broken store. Same for `help`.
   if (cli.rest.length && ["enable", "disable", "help"].includes(cli.rest[0].toLowerCase()) && cli.rest.length === 1) {
@@ -112,9 +142,10 @@ export function main(argv = process.argv.slice(2), { env = process.env, stdin = 
     store = openStore({ env, cwd });
   } catch (e) {
     if (e instanceof StoreError) {
-      if (e.kind === "busy" || e.kind === "readonly") err(`ledger: database ${busyWord(e)} at ${e.path}; nothing applied\n`);
-      else if (e.kind === "corrupt") err(`${e.message}; nothing applied, the file was left as it is\n`);
-      else err(`${e.message}\n`);
+      const tail = humanLines.length ? `; lines ${humanLines.join(", ")} (review dismiss/waive) are the human's and would be refused anyway` : "";
+      if (e.kind === "busy" || e.kind === "readonly") err(`ledger: database ${busyWord(e)} at ${e.path}; nothing applied${tail}\n`);
+      else if (e.kind === "corrupt") err(`${e.message}; nothing applied, the file was left as it is${tail}\n`);
+      else err(`${e.message}${tail}\n`);
       return 2;
     }
     throw e;
@@ -241,7 +272,10 @@ async function runReviewVerb({ store, cwd, env, sessionId, tokens, out }) {
         : { code: 1, text: `no cached judge answer for ${parsed.key}; keys are listed in \`${invocation()} report\`` };
     }
     else if (parsed.action === "addressed") r = await addressed({ ...common, reason: parsed.reason, config: store.config, env });
-    else if (parsed.action === "waive") r = waive({ ...common, reason: parsed.reason });
+    // Unreachable through main(), which refuses both before the store opens; the functions refuse
+    // via "cli" again (the second layer).
+    else if (parsed.action === "waive") r = waive({ ...common, via: "cli", reason: parsed.reason });
+    else if (parsed.action === "dismiss") r = dismiss({ ...common, via: "cli", findingId: parsed.findingId, disposition: parsed.disposition, reason: parsed.reason });
     else if ((store.config.review?.mode ?? "gate") === "off") r = { code: 0, text: "review.mode is off in the user config; nothing reviewed" };
     else r = await runReview({ ...common, env, config: store.config, labs: parsed.labs, base: parsed.base, forceRound: parsed.forceRound, claudex: parsed.claudex ?? [], cli: invocation() });
     out(`${r.text}\n`);

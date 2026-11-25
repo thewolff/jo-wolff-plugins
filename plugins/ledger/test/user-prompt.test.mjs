@@ -87,3 +87,11 @@ test("looksLikeLedgerLine and ledgerLines", () => {
   assert.equal(ledgerLines("approve q-abc\nthanks"), null);
   assert.equal(ledgerLines("\n\n"), null);
 });
+
+test("looksLikeLedgerLine reads review dismiss and review waive lines of any length", () => {
+  const long = Array.from({ length: 30 }, (_, i) => `word${i}`).join(" ");
+  assert.equal(looksLikeLedgerLine(`review dismiss fd-abc1 wrong ${long}`), true);
+  assert.equal(looksLikeLedgerLine(`Review Waive ${long}`), true);
+  assert.equal(looksLikeLedgerLine("review status"), false);
+  assert.equal(looksLikeLedgerLine(`please review waive ${long}`), false);
+});

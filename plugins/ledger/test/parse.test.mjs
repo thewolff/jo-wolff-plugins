@@ -176,3 +176,21 @@ test("promptApplicable: id-bearing and read-only commands only; free-text verbs 
   assert.ok(!promptApplicable(p("disable")));
   assert.ok(!promptApplicable(p("raise q-3")));
 });
+
+test("review dismiss and review waive grammar; promptApplicable allows only those two review actions", () => {
+  assert.deepEqual(
+    (({ kind, verb, action, findingId, disposition, reason }) => ({ kind, verb, action, findingId, disposition, reason }))(parseLine('review dismiss fd-abc1 Wrong "the line is fine"')),
+    { kind: "command", verb: "review", action: "dismiss", findingId: "fd-abc1", disposition: "wrong", reason: "the line is fine" },
+  );
+  assert.equal(parseLine("review dismiss fd-abc1 wrong").reason, "");
+  assert.equal(parseLine("review dismiss fd-abc1").kind, "refused");
+  assert.match(parseLine("review dismiss").reason, /^usage: review dismiss <fd-id> wrong\|intentional\|doesnt-matter/);
+  const w = parseLine('review waive --in /tmp/x --head=abc123 "prototype, push it"');
+  assert.deepEqual([w.kind, w.action, w.in, w.head, w.reason], ["command", "waive", "/tmp/x", "abc123", "prototype, push it"]);
+  assert.deepEqual([parseLine("review waive ship it").in, parseLine("review waive ship it").reason], [null, "ship it"]);
+  assert.equal(parseLine("review waive --help").reason, "--help", "an unknown flag is the reason, which waive refuses");
+  assert.equal(parseLine("review waive --in").kind, "refused");
+  assert.ok(promptApplicable(parseLine("review dismiss fd-abc1 wrong x")));
+  assert.ok(promptApplicable(parseLine("review waive ship it")));
+  for (const line of ["review", "review status", 'review addressed "x"', "review judge k", "review --force-round"]) assert.equal(promptApplicable(parseLine(line)), false, line);
+});

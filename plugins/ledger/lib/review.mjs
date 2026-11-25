@@ -1139,8 +1139,142 @@ function indent(text) {
     .join("\n");
 }
 
-/** `review waive "<why>"`: a waived row for HEAD. */
-export function waive({ db, dbPath, cwd, reason, sessionId = null, now = Date.now() }) {
+// ---- The human's verbs: review dismiss and review waive (0.4.12) ----
+//
+// Both are applied only when they arrive as a prompt the human typed: the UserPromptSubmit hook
+// builds its context with via "prompt-hook", the only ledger path that carries the human's own
+// text. The CLI refuses them before the store opens (scripts/ledger.mjs), and both functions
+// check `via` first, so an agent cannot record either one, with or without `--by`.
+
+export const HUMAN_VERBS = Object.freeze(["dismiss", "waive"]);
+export const DISPOSITIONS = Object.freeze(["wrong", "intentional", "doesnt-matter"]);
+export const REASON_MAX = 1000;
+const FD_RE = /^fd-[a-z0-9]+$/;
+
+/** A word for a paste-ready line: quoted when it holds whitespace or a quote. */
+const word = (s) => (/[\s"'\\]/.test(s) ? JSON.stringify(s) : s);
+
+/**
+ * The paste-ready line for the human to type, from what the refused call carried. Waive names the
+ * repository and HEAD it would apply to (git only, never the store); the reason is always left
+ * as `"<their reason>"`, since the agent must not compose it.
+ */
+export function humanLine(verb, fields = {}, cwd = process.cwd()) {
+  if (verb === "dismiss") {
+    const id = FD_RE.test(fields.findingId ?? "") ? fields.findingId : "<fd-id>";
+    const disposition = DISPOSITIONS.includes(fields.disposition) ? fields.disposition : DISPOSITIONS.join("|");
+    return `review dismiss ${id} ${disposition} "<their reason>"`;
+  }
+  const folder = fields.in ? resolvePath(cwd, fields.in) : cwd;
+  try {
+    const { top, head } = gitHead(folder, { timeoutMs: HOOK_GIT_TIMEOUT_MS });
+    return `review waive --in ${word(top)} --head ${head} "<their reason>"`;
+  } catch {
+    return `review waive --in ${word(folder)} "<their reason>"`;
+  }
+}
+
+/** The refusal for a dismiss or waive that did not arrive as the human's typed prompt (no `refused ` prefix). */
+export function humanOnlyText(verb, fields = {}, cwd = process.cwd()) {
+  return `review ${verb} is the human's: ask them to type this as their whole prompt in a Claude Code session (an OMP session does not run ledger's prompt hook): ${humanLine(verb, fields, cwd)}; nothing recorded (needs hooks.userPromptCommands on)`;
+}
+
+/** Why a human's reason is refused, or null when it is fine. */
+function reasonProblem(verb, why) {
+  if (!why) return `review ${verb} needs the reason, in the human's words`;
+  if (/^<[^>]*>$/.test(why)) return `review ${verb} needs the human's own reason, not the placeholder ${why}`;
+  if (why.startsWith("--")) return `review ${verb}: the reason starts with ${why.split(/\s/)[0]}, which reads as a flag; give the reason in words`;
+  if (why.length > REASON_MAX) return `review ${verb}: the reason is ${why.length} characters; at most ${REASON_MAX}`;
+  return null;
+}
+
+/** The ids of the open blocking and should items in the gate state's latest lab rows, by lab. */
+function openSeriousIds(state) {
+  return state.labRows.flatMap((r) => rowItems(r).filter((i) => !i.resolved && i.severity !== "nit" && i.id).map((i) => `${i.id} (${r.lab})`));
+}
+
+/** The gate's own answer for HEAD after a dismissal, never more than the next push will get. */
+function gateAfter(db, top, head, mode, cli) {
+  const state = headState(db, top, head);
+  const d = gateDecision(state, mode, cli);
+  if (!d.deny) return `the review gate now allows ${short(head)}`;
+  const open = openSeriousIds(state);
+  if (open.length) return `still open: ${open.join(", ")}`;
+  return `the review gate still denies ${short(head)}: ${d.deny.split("\n")[0]}`;
+}
+
+/**
+ * `review dismiss <fd-id> <wrong|intentional|doesnt-matter> <reason…>`, typed by the human: one
+ * finding on HEAD is resolved with the human's disposition and reason. A cc_dismissals row and a
+ * superseding lab row built from the latest row for (cwd, HEAD, lab) are written in one
+ * transaction; the gate reads the latest row per lab, so it sees the dismissal at once.
+ * `afterRead` is a test hook, called inside the transaction after the authoritative read.
+ */
+export function dismiss({ db, dbPath, via, by = null, sessionId = null, promptId = null, findingId, disposition, reason, config = {}, cli = "ledger", now = Date.now(), afterRead = null }) {
+  if (via !== "prompt-hook") return { code: 1, text: `refused ${humanOnlyText("dismiss", { findingId, disposition })}` };
+  const id = String(findingId ?? "");
+  if (!DISPOSITIONS.includes(disposition)) return { code: 1, text: `refused review dismiss: the disposition is one of ${DISPOSITIONS.join(", ")}, not ${disposition ?? "(none)"}: review dismiss ${id || "<fd-id>"} ${DISPOSITIONS.join("|")} "<your reason>"` };
+  const why = String(reason ?? "").trim();
+  const problem = reasonProblem("dismiss", why);
+  if (problem) return { code: 1, text: `refused ${problem}` };
+  // Locate the finding outside the lock; git also stays outside it.
+  const found = FD_RE.test(id)
+    ? db
+        .prepare(`SELECT cwd, head_sha, lab FROM cc_reviews WHERE lab <> ? AND findings_json IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(findings_json) WHERE json_extract(value, '$.id') = ?) ORDER BY id DESC LIMIT 1`)
+        .get(META_LAB, id)
+    : null;
+  if (!found) return { code: 1, text: `refused no finding ${id} in the ledger (a finding from before 0.4.12 gets its id when review runs again); the current ids are in review status` };
+  let top, head;
+  try {
+    ({ top, head } = gitHead(found.cwd, { timeoutMs: HOOK_GIT_TIMEOUT_MS }));
+  } catch (err) {
+    return { code: 1, text: `refused ${err.message}` };
+  }
+  if (found.head_sha !== head) return { code: 1, text: `refused ${id} is on ${short(found.head_sha)}, and ${top} is at ${short(head)} now; run review, then dismiss` };
+  const at = nowIso(now);
+  const result = transaction(
+    db,
+    () => {
+      const latest = db.prepare("SELECT * FROM cc_reviews WHERE cwd = ? AND head_sha = ? AND lab = ? ORDER BY id DESC LIMIT 1").get(top, head, found.lab);
+      afterRead?.();
+      const items = rowItems(latest);
+      const item = items.find((i) => i.id === id);
+      if (!item) return { refused: `${id} is no longer listed on ${short(head)} (the lab was run again); the current ids are in review status` };
+      if (item.dismissed) return { refused: `${id} is already dismissed (${item.dismissed.disposition}, by ${item.dismissed.by} at ${item.dismissed.at})` };
+      if (item.resolved) return { refused: `${id} is already resolved (the judge found it fixed); nothing to dismiss` };
+      const dmId = newId("dm", now);
+      db.prepare("INSERT INTO cc_dismissals (id, finding_id, review_id, cwd, head_sha, branch, lab, severity, text, disposition, reason, by, via, session_id, prompt_id, at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(
+        dmId,
+        id,
+        latest.id,
+        top,
+        head,
+        latest.branch ?? null,
+        found.lab,
+        item.severity,
+        item.text,
+        disposition,
+        why,
+        by ?? "human",
+        via,
+        sessionId,
+        promptId,
+        at,
+      );
+      const marked = items.map((i) => (i.id === id ? { ...i, resolved: true, dismissed: { id: dmId, disposition, by: by ?? "human", at, sha: head } } : i));
+      const row = publishLabRowTx(db, { sessionId, cwd: top, head, base: latest.base_ref, branch: latest.branch, lab: found.lab, model: latest.model, verdict: latest.verdict, reason: latest.reason, items: marked, at });
+      return { dmId, row };
+    },
+    dbPath,
+  );
+  if (result.refused) return { code: 1, text: `refused ${result.refused}` };
+  const mode = config.review?.mode ?? "gate";
+  return { code: 0, id: result.dmId, text: `dismissed ${id} (${found.lab}, ${disposition}) on ${short(head)} in ${top}: ${why}\n${gateAfter(db, top, head, mode, cli)}` };
+}
+
+/** `review waive "<why>"`, typed by the human: a waived row for HEAD. */
+export function waive({ db, dbPath, cwd, reason, via, sessionId = null, now = Date.now() }) {
+  if (via !== "prompt-hook") return { code: 1, text: `refused ${humanOnlyText("waive", {}, cwd)}` };
   const why = String(reason ?? "").trim();
   if (!why) return { code: 1, text: 'refused review waive needs the reason: review waive "<why>"' };
   let top, head;

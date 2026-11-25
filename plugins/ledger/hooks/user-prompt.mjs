@@ -53,6 +53,29 @@ import { invocation } from "../lib/inject.mjs";
 
 const READ_ONLY = new Set(["pending", "log", "help"]);
 
+/** `dismiss` or `waive` when the tokens start `review dismiss` or `review waive`; null otherwise. */
+function humanVerbOf(tokens) {
+  if (tokens.length < 2 || tokens[0].toLowerCase() !== "review") return null;
+  const v = tokens[1].toLowerCase();
+  return v === "dismiss" || v === "waive" ? v : null;
+}
+
+/** The review verbs (dismiss, waive) of the prompt's lines that start with one, in order. */
+export function humanVerbLines(prompt) {
+  const verbs = [];
+  for (const l of String(prompt ?? "").split(/\r?\n/)) {
+    const body = stripComment(l);
+    const v = body ? humanVerbOf(tokenize(body)) : null;
+    if (v) verbs.push(v);
+  }
+  return verbs;
+}
+
+/** The line that says a typed review dismiss or waive was not applied because the prompt held prose. */
+export function strayHumanVerbText(verbs) {
+  return [...new Set(verbs)].map((v) => `ledger: the review ${v} line was not applied: a prompt applies ledger lines only when every line is one; type it on its own`).join("\n");
+}
+
 /** Whether one line has the shape of a ledger line the prompt hook may apply; null for blank/comment. */
 export function looksLikeLedgerLine(line) {
   const body = stripComment(line);
@@ -60,6 +83,8 @@ export function looksLikeLedgerLine(line) {
   const tokens = tokenize(body);
   if (!tokens.length) return null;
   const t0 = tokens[0].toLowerCase();
+  // The human's review verbs carry a reason of any length and no ledger id (0.4.12).
+  if (humanVerbOf(tokens)) return true;
   if (READ_ONLY.has(t0)) return tokens.length === 1 || (t0 === "log" && tokens.length === 2 && /^\d+$/.test(tokens[1]));
   if (/^\d+$/.test(t0) && tokens.length === 2) return true;
   if (tokens.length > 12) return false;
@@ -156,28 +181,36 @@ export function handle(input, { env = process.env, now = Date.now() } = {}) {
   const lines = ledgerLines(input.prompt);
   const watch = Boolean(sessionId) && existsSync(cfg.config.db);
   const answers = watch && cfg.config.inject.answers !== false;
-  if (!lines && !watch) return null;
+  // A typed review dismiss or waive inside a prompt with prose applies nothing; say so (0.4.12).
+  const stray = humanVerbLines(input.prompt);
+  const strayOnly = () => {
+    const text = strayHumanVerbText(stray);
+    return { systemMessage: text, hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: text } };
+  };
+  if (!lines && !watch) return stray.length ? strayOnly() : null;
   const out = withStore({ env, now, notices: cfg.notices, cwd, cfg, hook: "UserPromptSubmit" }, lines ? "the ledger lines in this prompt were not applied" : "answers recorded in other sessions were not checked", (store) => {
     const news = answers ? takeAnswers(store, sessionId, cwd, now, env) : [];
     const hints = watch && !lines ? bareOptionLines(store, input.prompt, cwd, sessionId, now, cfg) : [];
     const applied = lines ? applyLines(store, lines, cwd, sessionId, now) : null;
     // A prompt of ledger lines gets the batch block instead: each answer line already names what it left owed.
     const owed = watch && !lines ? owedLines(store, sessionId, cwd, now, env) : [];
-    if (!applied && !news.length && !hints.length && !owed.length) return null;
-    const system = applied ? applied.systemMessage : store.notices.join("\n");
+    const strayText = !applied && stray.length ? strayHumanVerbText(stray) : "";
+    if (!applied && !news.length && !hints.length && !owed.length && !strayText) return null;
+    const system = applied ? applied.systemMessage : [store.notices.join("\n"), strayText].filter(Boolean).join("\n");
     return {
       ...(system ? { systemMessage: system } : {}),
       hookSpecificOutput: {
         hookEventName: "UserPromptSubmit",
-        additionalContext: [news.join("\n"), hints.join("\n"), owed.join("\n"), applied?.context].filter(Boolean).join("\n\n"),
+        additionalContext: [strayText, news.join("\n"), hints.join("\n"), owed.join("\n"), applied?.context].filter(Boolean).join("\n\n"),
       },
     };
   });
   // An ordinary prompt never shows the person a store failure: the answers wait for the next prompt.
   if (!lines && out && !out.hookSpecificOutput) {
     logError("UserPromptSubmit", out.systemMessage, env);
-    return null;
+    return stray.length ? strayOnly() : null;
   }
+  if (!lines && !out && stray.length) return strayOnly();
   return out;
 }
 
