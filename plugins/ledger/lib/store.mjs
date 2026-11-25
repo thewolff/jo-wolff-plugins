@@ -63,14 +63,16 @@ export function openStore({ env = process.env, now = Date.now(), cwd = null, cfg
 
 /**
  * The context commands run in.
- * @param opts { store, cwd, via, by, sessionId, now }
+ * @param opts { store, cwd, via, by, sessionId, promptId, now }; promptId is the prompt hook's
+ *   input prompt_id, stored on a dismissal (0.4.12), null when the input has none
  */
-export function makeCtx({ store, cwd, via = "cli", by = null, sessionId = null, now = Date.now() }) {
+export function makeCtx({ store, cwd, via = "cli", by = null, sessionId = null, promptId = null, now = Date.now() }) {
   const human = userName(store.config);
   return {
     cwd,
     via,
     sessionId,
+    promptId,
     now,
     config: store.config,
     configText: store.configText,

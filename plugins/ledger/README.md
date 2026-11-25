@@ -876,7 +876,8 @@ and exit code, and the bytes it reported freed). A 0.3.3 or 0.3.4 ledger on a sc
 runs on the tables both know, as described below for 0.3.1 on 7. Version 12 (0.4.12) creates
 `cc_dismissals` (one row per finding the human dismissed: the finding's `fd-` id, the folder,
 commit, branch, lab, severity and text, the disposition `wrong`/`intentional`/`doesnt-matter`, the
-reason, who and which session; `via` can only be `prompt-hook`; one row per finding and commit) and
+reason, who, which session and, when the hook input carries one, its `prompt_id`; `via` can only be
+`prompt-hook`; one row per finding and commit) and
 touches no existing table.
 
 The latest `cc_reviews` row for a commit and lab is the one with the highest `id`, not the latest
